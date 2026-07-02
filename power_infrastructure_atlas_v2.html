@@ -1,0 +1,4154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <title>North America Power Infrastructure Atlas</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="">
+
+    /* ===== OGW-inspired shell + behavior overrides ===== */
+    function fmtMWTight(n) {
+      if (!Number.isFinite(n)) return '0MW';
+      const abs = Math.abs(n);
+      if (abs >= 1000) return `${fmt1(n / 1000)}GW`;
+      return `${fmtInt(n)}MW`;
+    }
+
+    function updateRegionTitle() {
+      const c = map.getCenter();
+      let title = 'Power Plants';
+      if (c.lat > 24 && c.lat < 50 && c.lng > -126 && c.lng < -66) title = 'US Power Plants';
+      else if (c.lat > 35 && c.lat < 44 && c.lng > -10 && c.lng < 4) title = 'Spain Power Plants';
+      else if (c.lat > 6 && c.lat < 75 && c.lng > -170 && c.lng < -50) title = 'North America Power Plants';
+      else if (c.lat > -60 && c.lat < 85) title = 'Global Power Plants';
+      const el = document.getElementById('regionTitle');
+      if (el) el.textContent = title;
+    }
+
+    function injectOgwInspiredShell() {
+      const leftRail = document.getElementById('leftRail');
+      if (leftRail) {
+        leftRail.innerHTML = `
+          <div class="logoBtn" id="railBrandBtn" title="Home extent">
+            <div class="logoMark"><span></span><span></span><span></span></div>
+          </div>
+          <div class="railBtn active" id="railLayersBtn" title="Layers">≡</div>
+          <div class="railBtn" id="railSearchBtn" title="Search">⌕</div>
+          <div class="railBtn" id="railLoaderBtn" title="Load source">＋</div>
+          <div class="railBtn" id="railCreditsBtn" title="Credits">ⓘ</div>
+          <div style="flex:1 1 auto;"></div>
+          <div class="railBtn" id="railHomeBtn" title="Home extent">⌖</div>
+          <div class="railBtn" id="railUserBtn" title="Copy share link">⇪</div>
+        `;
+      }
+
+      const header = document.getElementById('sidebarHeader');
+      if (header) {
+        header.innerHTML = `
+          <div id="titleRow">
+            <div class="brandChip"><div class="logoMark"><span></span><span></span><span></span></div></div>
+            <div class="titleTextWrap">
+              <div id="titleLine">
+                <span id="regionTitle">US Power Plants</span>
+                <span class="badge">BETA</span>
+              </div>
+              <div id="heroStats">0 plants | 0GW</div>
+            </div>
+            <div id="headerTools">
+              <button class="panelIcon" id="toggleSidebarBtn" title="Collapse panel">◂</button>
+              <button class="panelIcon" id="openCreditsBtn" title="Sources and credits">⚙</button>
+            </div>
+          </div>
+          <div id="statusToggleRow">
+            <label class="compactCheck"><input type="checkbox" id="operatingOnlyToggle" checked /><span>Operating plants</span></label>
+            <button class="panelTinyIcon" id="panelSearchFocusBtn" title="Focus search">⌕</button>
+          </div>
+        `;
+      }
+
+      const body = document.getElementById('sidebarBody');
+      if (body) {
+        body.innerHTML = `
+          <div class="ghostMetrics" aria-hidden="true">
+            <div class="metric"><div class="metricK">Visible plants</div><div class="metricV" id="metricPlants">0</div></div>
+            <div class="metric"><div class="metricK">Visible MW</div><div class="metricV" id="metricMW">0</div></div>
+            <div class="metric"><div class="metricK">Data centers</div><div class="metricV" id="metricDataCenters">0</div></div>
+            <div class="metric"><div class="metricK">Transmission miles</div><div class="metricV" id="metricTransmission">0</div></div>
+            <div id="plantsMeta">0 visible</div>
+          </div>
+
+          <div class="section" id="sectionGeneration">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Technology</div>
+              <button class="panelTinyIcon" data-scroll-target="sectionAdvanced" title="Advanced controls">⚙</button>
+            </div>
+            <div class="sectionBody">
+              <div id="technologyLegend"></div>
+              <input type="text" id="plantSearch" placeholder="Plant or owner search" />
+              <div class="chipBar" id="plantStatusBar">
+                <div class="pill" data-plant-status="all">All</div>
+                <div class="pill active" data-plant-status="operating">Operating</div>
+                <div class="pill" data-plant-status="retired">Retired</div>
+              </div>
+              <div class="controlLine sourceRow">
+                <button class="smallBtn" data-open-loader="eia">Load EIA</button>
+                <div class="toggle" data-toggle-layer="gem-power"></div>
+              </div>
+              <div class="sidebarNote">GEM runs live. Load EIA if you want the file-first monthly plant inventory.</div>
+            </div>
+          </div>
+
+          <div class="section" id="sectionSize">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Size (MW)</div>
+              <button class="panelTinyIcon" id="fitScaleBtn" title="Fit home extent">⌖</button>
+            </div>
+            <div class="sectionBody sizeLegendWrap">
+              <div class="sizeLegend">
+                <div class="sizeRings" id="bubbleLegend"></div>
+                <div class="sizeLabels" id="bubbleLabels"></div>
+              </div>
+              <div id="bubbleMeta">Zoom 4.0 | Bubble size 1.00x</div>
+            </div>
+          </div>
+
+          <div class="section" id="sectionDataCenters">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Data Centers</div>
+              <button class="panelTinyIcon" data-scroll-target="sectionAdvanced" title="Scenario controls">⚙</button>
+            </div>
+            <div class="sectionBody">
+              <div class="row" data-layer="im3-existing-centroids">
+                <div class="rowMain">
+                  <div class="swatch diamondSwatch" style="background:#ffffff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Data Centers</div>
+                    <div class="rowSub">IM3 existing atlas</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="im3-existing-centroids"></div>
+              </div>
+              <div class="row" data-layer="epoch-frontier">
+                <div class="rowMain">
+                  <div class="swatch diamondSwatch" style="background:#ff82cb"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Frontier AI</div>
+                    <div class="rowSub">Epoch frontier overlay</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="epoch-frontier"></div>
+              </div>
+              <div class="row" data-layer="im3-footprints">
+                <div class="rowMain">
+                  <div class="swatch diamondSwatch" style="background:#b9fff5"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Footprints</div>
+                    <div class="rowSub">Facility footprints when available</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="im3-footprints"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section" id="sectionFiber">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Fiber Infrastructure</div>
+              <button class="panelTinyIcon" data-open-loader="tele" title="Load submarine cables">＋</button>
+            </div>
+            <div class="sectionBody">
+              <div class="row" data-layer="tele-custom">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#80f2ff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Submarine Cables</div>
+                    <div class="rowSub">Load TeleGeography-compatible geometry</div>
+                  </div>
+                </div>
+                <button class="smallBtn" data-open-loader="tele">Load</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="section" id="sectionTransmission">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Transmission</div>
+              <button class="panelTinyIcon" data-scroll-target="sectionAdvanced" title="Advanced layers">⚙</button>
+            </div>
+            <div class="sectionBody">
+              <div class="row" data-layer="hifld-transmission">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#59d8ff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Transmission</div>
+                    <div class="rowSub">HIFLD public service</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="hifld-transmission"></div>
+              </div>
+              <div id="voltageLegend"></div>
+            </div>
+          </div>
+
+          <div class="section" id="sectionSubstations">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Substations</div>
+              <button class="panelTinyIcon" data-scroll-target="sectionAdvanced" title="Advanced layers">⚙</button>
+            </div>
+            <div class="sectionBody">
+              <div class="row" data-layer="hifld-substations">
+                <div class="rowMain">
+                  <div class="swatch" style="background:#f5f7ff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Substations</div>
+                    <div class="rowSub">HIFLD clustered points</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="hifld-substations"></div>
+              </div>
+              <div id="substationVoltageLegend"></div>
+            </div>
+          </div>
+
+          <div class="section" id="sectionPlanned">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Planned Upgrades</div>
+              <button class="panelTinyIcon" data-open-loader="ourgridfuture" title="Load planned transmission">＋</button>
+            </div>
+            <div class="sectionBody">
+              <div class="row" data-layer="ourgridfuture">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#ff73b3"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Planned Transmission</div>
+                    <div class="rowSub">Our Grid Future workbook or GIS export</div>
+                  </div>
+                </div>
+                <div class="controlLine"><button class="smallBtn" data-open-loader="ourgridfuture">Load</button></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section" id="sectionGas">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Gas Pipelines</div>
+              <button class="panelTinyIcon" data-scroll-target="sectionAdvanced" title="Advanced layers">⚙</button>
+            </div>
+            <div class="sectionBody">
+              <div class="row" data-layer="hifld-gas">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#9c7dff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Pipelines</div>
+                    <div class="rowSub">HIFLD interstate / intrastate geometry</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="hifld-gas"></div>
+              </div>
+              <div id="gasLegend"></div>
+            </div>
+          </div>
+
+          <div class="section collapsed" id="sectionAdvanced">
+            <div class="sectionHeader">
+              <div class="sectionHeaderTitle">Custom Layers</div>
+              <div class="sectionMeta">Advanced</div>
+            </div>
+            <div class="sectionBody">
+              <div class="sectionMeta" id="basemapMeta">Dark Matter</div>
+              <div class="chipBar" id="basemapChips"></div>
+              <div class="compactGrid" style="margin-top:8px;">
+                <select id="im3GrowthSelect">
+                  <option value="moderate_growth">Moderate growth</option>
+                  <option value="low_growth">Low growth</option>
+                  <option value="high_growth">High growth</option>
+                  <option value="higher_growth">Higher growth</option>
+                </select>
+                <select id="im3MarketGravitySelect">
+                  <option value="50">50% gravity</option>
+                  <option value="0">0% gravity</option>
+                  <option value="25">25% gravity</option>
+                  <option value="75">75% gravity</option>
+                  <option value="100">100% gravity</option>
+                </select>
+              </div>
+              <div class="row" data-layer="im3-projected">
+                <div class="rowMain">
+                  <div class="swatch diamondSwatch" style="background:#98a9ff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Projected data centers</div>
+                    <div class="rowSub">IM3 scenario layer</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="im3-projected"></div>
+              </div>
+              <div class="row" data-layer="section-368">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#ffcf52"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Section 368 corridors</div>
+                    <div class="rowSub">Federal energy corridors</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="section-368"></div>
+              </div>
+              <div class="row" data-layer="narn-rail">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#66c3ff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Rail</div>
+                    <div class="rowSub">FRA / BTS NARN</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="narn-rail"></div>
+              </div>
+              <div class="row" data-layer="nhs-highways">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#ffb668"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Highways</div>
+                    <div class="rowSub">FHWA / BTS NHS</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="nhs-highways"></div>
+              </div>
+              <div class="row" data-layer="nwn-waterways">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#35e1c3"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Waterways</div>
+                    <div class="rowSub">USACE NWN</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="nwn-waterways"></div>
+              </div>
+              <div class="row" data-layer="aqueduct-risk">
+                <div class="rowMain">
+                  <div class="swatch" style="background:#ff8f66"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">Water risk</div>
+                    <div class="rowSub">WRI Aqueduct 4.0</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="aqueduct-risk"></div>
+              </div>
+              <div class="row" data-layer="afdc-ev">
+                <div class="rowMain">
+                  <div class="swatch diamondSwatch" style="background:#ffffff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">EV charging</div>
+                    <div class="rowSub">AFDC / NREL</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="afdc-ev"></div>
+              </div>
+              <div class="row" data-layer="osm-power">
+                <div class="rowMain">
+                  <div class="swatch lineSwatch" style="--line:#c48dff"></div>
+                  <div class="rowLabelWrap">
+                    <div class="rowLabel">OSM power</div>
+                    <div class="rowSub">Current viewport only</div>
+                  </div>
+                </div>
+                <div class="toggle" data-toggle-layer="osm-power"></div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      const topRight = document.getElementById('topRight');
+      if (topRight) {
+        topRight.innerHTML = `
+          <div id="statusPill" class="glass"><div class="statusDot"></div><span id="statusText">Local build ready</span></div>
+          <div id="topActions">
+            <div class="topBtn glass" id="bookmarkBtn" title="Copy share link">🔗</div>
+            <div class="topBtn glass" id="undoBtn" title="Previous basemap">↶</div>
+            <div class="topBtn glass" id="redoBtn" title="Next basemap">↷</div>
+            <div class="topBtn glass" id="fitBtn" title="Fit home extent">⌖</div>
+            <div class="topBtn glass" id="refreshBtn" title="Refresh live layers">↻</div>
+            <div class="topBtn glass" id="basemapBtn" title="Cycle basemap">◐</div>
+            <div class="topBtn glass" id="sidebarBtn" title="Toggle panel">☰</div>
+            <div class="topBtn glass" id="creditsBtn" title="Sources and credits">ⓘ</div>
+          </div>
+        `;
+      }
+
+      const bottomCards = document.getElementById('bottomCards');
+      if (bottomCards) {
+        bottomCards.innerHTML = `
+          <div class="miniCard" data-scroll-target="sectionGeneration"><span>Layers</span></div>
+          <div class="miniCard" data-scroll-target="sectionAdvanced"><span>Custom Layers</span></div>
+          <div class="miniCard" data-scroll-target="sectionAdvanced"><span>Map Type</span></div>
+        `;
+      }
+
+      if (!document.getElementById('mapDock')) {
+        const dock = document.createElement('div');
+        dock.id = 'mapDock';
+        dock.innerHTML = `
+          <div class="mapDockBtn" id="dockSearchBtn" title="Focus search">⌕</div>
+          <div class="mapDockBtn" id="dockBasemapBtn" title="Cycle basemap">◐</div>
+        `;
+        document.body.appendChild(dock);
+      }
+
+      if (!document.getElementById('globeInfoBtn')) {
+        const info = document.createElement('div');
+        info.id = 'globeInfoBtn';
+        info.textContent = 'i';
+        info.title = 'Atlas info';
+        document.body.appendChild(info);
+      }
+    }
+
+    function renderBubbleLegend() {
+      const ringWrap = document.getElementById('bubbleLegend');
+      const labelWrap = document.getElementById('bubbleLabels');
+      if (!ringWrap || !labelWrap) return;
+      const values = [5000, 2500, 1000, 500, 100];
+      ringWrap.innerHTML = values.map((mw) => {
+        const size = Math.max(8, radiusFromCapacity(mw) * 2);
+        return `<div class="sizeRing" style="width:${size}px;height:${size}px;"></div>`;
+      }).join('');
+      labelWrap.innerHTML = values.map((mw) => `<div>${fmtMWTight(mw)}</div>`).join('');
+    }
+
+    function updateBubbleLegendMeta() {
+      const meta = document.getElementById('bubbleMeta');
+      if (!meta) return;
+      meta.textContent = `Zoom ${fmt1(map.getZoom())} | Bubble size 1.00x`;
+    }
+
+    function updateTechnologyLegend(plantFeatures) {
+      const wrap = document.getElementById('technologyLegend');
+      if (!wrap) return;
+      const buckets = new Map();
+      for (const feature of plantFeatures) {
+        const p = feature.properties || {};
+        const tech = pick(p, ['technology', 'fuel_type', 'Fuel']) || 'Other';
+        const mw = Number(pick(p, ['nameplate_mw', 'mw', 'capacity_mw', 'Capacity_MW', 'capacity'])) || 0;
+        const cur = buckets.get(tech) || { count: 0, mw: 0 };
+        cur.count += 1;
+        cur.mw += mw;
+        buckets.set(tech, cur);
+      }
+      const rows = [...buckets.entries()].sort((a, b) => b[1].mw - a[1].mw);
+      wrap.innerHTML = rows.length ? rows.map(([name, info]) => `
+        <div class="legendItem">
+          <div class="swatch" style="background:${technologyColor(name)}"></div>
+          <div class="name">${escapeHtml(name)}</div>
+          <div class="n">${fmtInt(info.count)}</div>
+          <div class="mw">${fmtMWTight(info.mw)}</div>
+        </div>
+      `).join('') : `<div class="hint">Enable GEM or load EIA to populate the generation legend.</div>`;
+    }
+
+    function renderVoltageLegend(targetId, layerId, emptyText) {
+      const wrap = document.getElementById(targetId);
+      if (!wrap) return;
+      const layer = app.layers.get(layerId);
+      const features = layer && layer.data && Array.isArray(layer.data.features) ? layer.data.features : [];
+      const buckets = new Map();
+      for (const feature of features) {
+        const kv = normalizeVoltage(pick(feature.properties || {}, ['voltage', 'MAX_VOLT', 'max_voltage', 'MAXVOLT', 'max_kv', 'KV', 'VOLTAGE']));
+        const label = voltageBucket(kv);
+        buckets.set(label, (buckets.get(label) || 0) + 1);
+      }
+      const palette = {
+        '735kV+': '#71f1ff',
+        '500-734kV': '#56d9ff',
+        '345-499kV': '#4bb7ff',
+        '230-344kV': '#4f89ff',
+        '100-229kV': '#7b6eff',
+        '31-99kV': '#a66fff',
+        '<31kV': '#d06dff',
+        'Unknown': '#8fa2c4'
+      };
+      const order = ['735kV+', '500-734kV', '345-499kV', '230-344kV', '100-229kV', '31-99kV', '<31kV', 'Unknown'];
+      wrap.innerHTML = order.filter((label) => buckets.has(label)).map((label) => `
+        <div class="legendItem">
+          <div class="swatch lineSwatch" style="--line:${palette[label] || palette.Unknown}"></div>
+          <div class="name">${escapeHtml(label)}</div>
+          <div class="n">${fmtInt(buckets.get(label))}</div>
+          <div class="mw"></div>
+        </div>
+      `).join('') || `<div class="hint">${emptyText}</div>`;
+    }
+
+    function updateVoltageLegend() {
+      renderVoltageLegend('voltageLegend', 'hifld-transmission', 'Enable HIFLD transmission to see voltage buckets.');
+    }
+
+    function updateSubstationLegend() {
+      renderVoltageLegend('substationVoltageLegend', 'hifld-substations', 'Enable HIFLD substations to see voltage buckets.');
+    }
+
+    function updateGasLegend() {
+      const wrap = document.getElementById('gasLegend');
+      if (!wrap) return;
+      const layer = app.layers.get('hifld-gas');
+      const features = layer && layer.data && Array.isArray(layer.data.features) ? layer.data.features : [];
+      if (!features.length) {
+        wrap.innerHTML = '<div class="hint">Enable gas pipelines to see in-view segment counts.</div>';
+        return;
+      }
+      let interstate = 0;
+      let intrastate = 0;
+      let other = 0;
+      for (const feature of features) {
+        const p = feature.properties || {};
+        const label = String(pick(p, ['TYPEPIPE', 'TYPE', 'CLASS', 'operator_type', 'system_type']) || '').toLowerCase();
+        if (label.includes('interstate')) interstate += 1;
+        else if (label.includes('intrastate')) intrastate += 1;
+        else other += 1;
+      }
+      const rows = [];
+      if (interstate) rows.push(['Interstate', interstate]);
+      if (intrastate) rows.push(['Intrastate', intrastate]);
+      if (other || !rows.length) rows.push(['Segments', features.length]);
+      wrap.innerHTML = rows.map(([name, count]) => `
+        <div class="legendItem">
+          <div class="swatch lineSwatch" style="--line:#9c7dff"></div>
+          <div class="name">${escapeHtml(name)}</div>
+          <div class="n">${fmtInt(count)}</div>
+          <div class="mw"></div>
+        </div>
+      `).join('');
+    }
+
+    function toggleSidebar(forceOpen) {
+      const sidebar = document.getElementById('sidebar');
+      if (!sidebar) return;
+      const open = typeof forceOpen === 'boolean' ? forceOpen : sidebar.classList.contains('hiddenSidebar');
+      sidebar.classList.toggle('hiddenSidebar', !open);
+      const sidebarBtn = document.getElementById('sidebarBtn');
+      const railBtn = document.getElementById('railLayersBtn');
+      if (sidebarBtn) sidebarBtn.classList.toggle('active', open);
+      if (railBtn) railBtn.classList.toggle('active', open);
+      updateUrlState();
+    }
+
+    function focusPlantSearch() {
+      toggleSidebar(true);
+      const input = document.getElementById('plantSearch');
+      if (input) input.focus();
+    }
+
+    function refreshVisibleLayers() {
+      for (const id of app.layerOrder) {
+        const layer = app.layers.get(id);
+        if (!layer || !layer.visible) continue;
+        const listener = layer.destroyers.find((d) => d && d._refresh);
+        if (listener && listener._refresh) listener._refresh();
+      }
+      showToast('Live layers refreshed.');
+    }
+
+    function previousBasemap() {
+      const keys = Object.keys(basemaps);
+      const i = keys.indexOf(activeBasemap);
+      setBasemap(keys[(i - 1 + keys.length) % keys.length]);
+    }
+
+    function setBasemap(key) {
+      if (!basemaps[key] || key === activeBasemap) return;
+      map.removeLayer(basemaps[activeBasemap].layer);
+      activeBasemap = key;
+      basemaps[key].layer.addTo(map);
+      const meta = document.getElementById('basemapMeta');
+      if (meta) meta.textContent = basemaps[key].label;
+      document.querySelectorAll('#basemapChips .pill').forEach((pill) => pill.classList.toggle('active', pill.dataset.basemap === key));
+      updateUrlState();
+    }
+
+    function nextBasemap() {
+      const keys = Object.keys(basemaps);
+      const i = keys.indexOf(activeBasemap);
+      setBasemap(keys[(i + 1) % keys.length]);
+    }
+
+    async function copyStateUrl() {
+      const url = location.href;
+      try {
+        await navigator.clipboard.writeText(url);
+        showToast('Share link copied.');
+      } catch (_) {
+        showToast(url);
+      }
+    }
+
+    function syncPlantStatusUi() {
+      document.querySelectorAll('[data-plant-status]').forEach((el) => el.classList.toggle('active', el.dataset.plantStatus === app.plantStatus));
+      const op = document.getElementById('operatingOnlyToggle');
+      if (op) op.checked = app.plantStatus === 'operating';
+    }
+
+    function updateUrlState() {
+      if (window.__suspendUrlStateSync) return;
+      const params = new URLSearchParams(location.search);
+      const layers = app.layerOrder.filter((id) => {
+        const layer = app.layers.get(id);
+        return layer && layer.visible;
+      });
+      if (layers.length) params.set('layers', layers.join(','));
+      else params.delete('layers');
+      params.set('basemap', activeBasemap);
+      params.set('panel', document.getElementById('sidebar') && document.getElementById('sidebar').classList.contains('hiddenSidebar') ? 'closed' : 'open');
+      const q = document.getElementById('plantSearch') ? document.getElementById('plantSearch').value.trim() : '';
+      if (q) params.set('q', q); else params.delete('q');
+      if (app.plantStatus && app.plantStatus !== 'all') params.set('status', app.plantStatus); else params.delete('status');
+      const next = `${location.pathname}?${params.toString()}`;
+      history.replaceState(null, '', next);
+    }
+
+    async function applyInitialUiState() {
+      if (window.__initialUiStateApplied) return;
+      window.__initialUiStateApplied = true;
+      const params = new URLSearchParams(location.search);
+      window.__suspendUrlStateSync = true;
+
+      const requestedBasemap = params.get('basemap');
+      if (requestedBasemap && basemaps[requestedBasemap]) setBasemap(requestedBasemap);
+
+      const searchText = params.get('q') || '';
+      if (document.getElementById('plantSearch')) {
+        document.getElementById('plantSearch').value = searchText;
+        app.searchText = searchText;
+      }
+
+      const requestedStatus = params.get('status');
+      app.plantStatus = ['all', 'operating', 'retired'].includes(requestedStatus) ? requestedStatus : 'operating';
+      syncPlantStatusUi();
+
+      const requestedLayers = (params.get('layers') || '').split(',').map((s) => s.trim()).filter(Boolean);
+      const defaults = ['gem-power', 'im3-existing-centroids', 'epoch-frontier', 'hifld-transmission', 'hifld-substations'];
+      const toEnable = requestedLayers.length ? requestedLayers : defaults;
+      for (const id of toEnable) {
+        if (app.layers.get(id)) {
+          try { await toggleLayer(id, true); } catch (_) {}
+        }
+      }
+
+      if (params.get('panel') === 'closed') toggleSidebar(false);
+      else toggleSidebar(true);
+
+      applyPlantLayerFilters();
+      updateSidebarMetrics();
+      window.__suspendUrlStateSync = false;
+      updateUrlState();
+    }
+
+    function updateSidebarMetrics() {
+      let liveLayers = 0;
+      let features = 0;
+      for (const id of app.layerOrder) {
+        const layer = app.layers.get(id);
+        if (!layer || !layer.visible) continue;
+        liveLayers += 1;
+        features += layer.count || 0;
+      }
+
+      const plantFeatures = collectVisiblePlantFeatures();
+      const totalMW = plantFeatures.reduce((sum, feature) => sum + (Number(pick(feature.properties || {}, ['nameplate_mw', 'mw', 'capacity_mw', 'Capacity_MW', 'capacity'])) || 0), 0);
+      const dcCount = collectVisibleDataCenterCount();
+      const txMiles = collectTransmissionMiles();
+
+      const metricPlants = document.getElementById('metricPlants');
+      const metricMW = document.getElementById('metricMW');
+      const metricDataCenters = document.getElementById('metricDataCenters');
+      const metricTransmission = document.getElementById('metricTransmission');
+      if (metricPlants) metricPlants.textContent = fmtInt(plantFeatures.length);
+      if (metricMW) metricMW.textContent = fmtMW(totalMW);
+      if (metricDataCenters) metricDataCenters.textContent = fmtInt(dcCount);
+      if (metricTransmission) metricTransmission.textContent = fmtInt(txMiles);
+
+      const hero = document.getElementById('heroStats');
+      if (hero) hero.textContent = `${fmtInt(plantFeatures.length)} plants | ${fmtMWTight(totalMW)}`;
+      const status = document.getElementById('statusText');
+      if (status) status.textContent = `${fmtInt(liveLayers)} live layers | ${fmtInt(features)} loaded features`;
+      const meta = document.getElementById('plantsMeta');
+      if (meta) meta.textContent = plantFeatures.length ? `${fmtInt(plantFeatures.length)} visible` : '0 visible';
+
+      updateRegionTitle();
+      updateTechnologyLegend(plantFeatures);
+      updateVoltageLegend();
+      updateSubstationLegend();
+      updateGasLegend();
+      updateBubbleLegendMeta();
+      syncPlantStatusUi();
+      updateUrlState();
+    }
+
+    function setupUi() {
+      injectOgwInspiredShell();
+      renderBubbleLegend();
+      makeBasemapChips();
+      setupSectionCollapsers();
+      updateRegionTitle();
+
+      const bind = (id, fn) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', fn);
+      };
+
+      bind('fitBtn', fitHome);
+      bind('fitScaleBtn', fitHome);
+      bind('railBrandBtn', fitHome);
+      bind('railHomeBtn', fitHome);
+      bind('refreshBtn', refreshVisibleLayers);
+      bind('basemapBtn', nextBasemap);
+      bind('dockBasemapBtn', nextBasemap);
+      bind('undoBtn', previousBasemap);
+      bind('redoBtn', nextBasemap);
+      bind('creditsBtn', () => toggleCredits());
+      bind('openCreditsBtn', () => toggleCredits());
+      bind('railCreditsBtn', () => toggleCredits());
+      bind('closeCreditsBtn', () => toggleCredits(false));
+      bind('railLoaderBtn', () => openLoader('custom'));
+      bind('toggleSidebarBtn', () => toggleSidebar(false));
+      bind('sidebarBtn', () => toggleSidebar());
+      bind('railLayersBtn', () => toggleSidebar());
+      bind('panelSearchFocusBtn', focusPlantSearch);
+      bind('railSearchBtn', focusPlantSearch);
+      bind('dockSearchBtn', focusPlantSearch);
+      bind('bookmarkBtn', copyStateUrl);
+      bind('railUserBtn', copyStateUrl);
+      bind('globeInfoBtn', () => showToast('Decorative minimap widget.'));
+
+      document.querySelectorAll('[data-open-loader]').forEach((btn) => btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openLoader(btn.dataset.openLoader);
+      }));
+
+      document.querySelectorAll('[data-scroll-target]').forEach((card) => {
+        card.addEventListener('click', (e) => {
+          const target = document.getElementById(card.dataset.scrollTarget);
+          if (target) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        });
+      });
+
+      document.querySelectorAll('[data-toggle-layer]').forEach((el) => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleLayer(el.dataset.toggleLayer);
+        });
+      });
+
+      document.getElementById('loaderCancelBtn').addEventListener('click', closeLoader);
+      document.getElementById('loaderMode').addEventListener('change', (e) => {
+        const isFile = e.target.value === 'file';
+        document.getElementById('loaderFile').style.display = isFile ? '' : 'none';
+        document.getElementById('loaderUrl').style.display = isFile ? 'none' : '';
+      });
+      document.getElementById('loaderSubmitBtn').addEventListener('click', () => {
+        loadFileOrUrl(
+          document.getElementById('loaderTarget').value,
+          document.getElementById('loaderMode').value,
+          document.getElementById('loaderFile').files[0],
+          document.getElementById('loaderUrl').value,
+          false
+        );
+      });
+      document.getElementById('loaderDemoBtn').addEventListener('click', () => {
+        loadFileOrUrl(document.getElementById('loaderTarget').value, 'url', null, '', true);
+      });
+
+      document.getElementById('plantSearch').addEventListener('input', debounce((e) => {
+        app.searchText = e.target.value || '';
+        applyPlantLayerFilters();
+        updateSidebarMetrics();
+      }, 160));
+
+      document.getElementById('plantStatusBar').addEventListener('click', (e) => {
+        const pill = e.target.closest('[data-plant-status]');
+        if (!pill) return;
+        app.plantStatus = pill.dataset.plantStatus;
+        syncPlantStatusUi();
+        applyPlantLayerFilters();
+        updateSidebarMetrics();
+      });
+
+      document.getElementById('operatingOnlyToggle').addEventListener('change', (e) => {
+        app.plantStatus = e.target.checked ? 'operating' : 'all';
+        syncPlantStatusUi();
+        applyPlantLayerFilters();
+        updateSidebarMetrics();
+      });
+
+      document.getElementById('im3GrowthSelect').addEventListener('change', () => {
+        const layer = app.layers.get('im3-projected');
+        if (layer && layer.visible) {
+          clearLayer(layer);
+          toggleLayer('im3-projected', true);
+        }
+      });
+      document.getElementById('im3MarketGravitySelect').addEventListener('change', () => {
+        const layer = app.layers.get('im3-projected');
+        if (layer && layer.visible) {
+          clearLayer(layer);
+          toggleLayer('im3-projected', true);
+        }
+      });
+
+      map.on('zoomend moveend', () => {
+        updateRegionTitle();
+        updateBubbleLegendMeta();
+      });
+
+      requestAnimationFrame(() => {
+        applyInitialUiState();
+      });
+    }
+
+</script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/@tmcw/togeojson@7.0.0/dist/togeojson.umd.js"></script>
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #02050d;
+      --panel: rgba(8, 13, 28, 0.86);
+      --panel-solid: rgba(8, 13, 28, 0.96);
+      --panel-2: rgba(15, 22, 45, 0.72);
+      --card: rgba(255, 255, 255, 0.05);
+      --card-2: rgba(255, 255, 255, 0.07);
+      --border: rgba(255, 255, 255, 0.12);
+      --border-2: rgba(255, 255, 255, 0.08);
+      --text: rgba(248, 251, 255, 0.96);
+      --muted: rgba(214, 223, 255, 0.68);
+      --muted-2: rgba(214, 223, 255, 0.52);
+      --accent: #52d7ff;
+      --accent-2: #9f7bff;
+      --accent-3: #30f0b6;
+      --warning: #ffcc52;
+      --danger: #ff668a;
+      --shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+      --radius: 22px;
+      --radius-sm: 14px;
+      --left-rail-w: 54px;
+      --sidebar-w: 330px;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: radial-gradient(circle at top, rgba(30, 55, 110, 0.28), transparent 24%),
+                  linear-gradient(180deg, #040812 0%, #02050d 100%);
+      overflow: hidden;
+      font-family: Inter, Arial, Helvetica, sans-serif;
+      color: var(--text);
+    }
+
+    #map {
+      position: absolute;
+      inset: 0;
+      background: #030814;
+    }
+
+    .glass {
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+
+    #leftRail {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      bottom: 14px;
+      width: var(--left-rail-w);
+      border-radius: 18px;
+      z-index: 1100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+    }
+
+    .railBtn {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      user-select: none;
+      font-size: 16px;
+    }
+
+    .railBtn.active,
+    .railBtn:hover {
+      background: rgba(82, 215, 255, 0.16);
+      border-color: rgba(82, 215, 255, 0.35);
+      box-shadow: 0 0 0 4px rgba(82, 215, 255, 0.09);
+    }
+
+    #sidebar {
+      position: absolute;
+      top: 14px;
+      left: calc(14px + var(--left-rail-w) + 12px);
+      bottom: 14px;
+      width: var(--sidebar-w);
+      z-index: 1080;
+      border-radius: 22px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #sidebarHeader {
+      padding: 16px 16px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .spark {
+      width: 14px;
+      height: 14px;
+      border-radius: 5px;
+      background: linear-gradient(135deg, #ff4f9c, #7b72ff, #25d6ff);
+      box-shadow: 0 0 18px rgba(123, 114, 255, 0.48);
+    }
+
+    .badge {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      color: #ffdc69;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 220, 105, 0.22);
+      background: rgba(255, 220, 105, 0.09);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 26px;
+      line-height: 1.02;
+      letter-spacing: -0.02em;
+    }
+
+    #heroStats {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    #sidebarBody {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 10px 10px 14px;
+    }
+
+    .section {
+      border: 1px solid var(--border-2);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.02));
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+
+    .sectionHeader {
+      padding: 12px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      cursor: pointer;
+      user-select: none;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .sectionHeaderTitle {
+      font-size: 14px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .sectionBody {
+      padding: 10px 10px 12px;
+    }
+
+    .section.collapsed .sectionBody {
+      display: none;
+    }
+
+    .sectionMeta {
+      font-size: 11px;
+      color: var(--muted-2);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 10px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+      margin-bottom: 8px;
+    }
+
+    .rowMain {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .swatch {
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+      box-shadow: 0 0 12px rgba(255,255,255,0.25);
+      flex: none;
+    }
+
+    .rowLabelWrap {
+      min-width: 0;
+    }
+
+    .rowLabel {
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .rowSub {
+      font-size: 11px;
+      color: var(--muted-2);
+      margin-top: 2px;
+      line-height: 1.25;
+    }
+
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.09);
+      cursor: pointer;
+      flex: none;
+    }
+
+    .toggle::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.92);
+      transition: transform 120ms ease, background 120ms ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+    }
+
+    .toggle.on {
+      background: rgba(82, 215, 255, 0.22);
+      border-color: rgba(82, 215, 255, 0.34);
+    }
+
+    .toggle.on::after {
+      transform: translateX(19px);
+      background: #9ff6ff;
+    }
+
+    .smallBtn,
+    .pill,
+    select,
+    input[type="text"],
+    input[type="url"] {
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.055);
+      color: var(--text);
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 700;
+      outline: none;
+    }
+
+    .smallBtn {
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+
+    .smallBtn:hover {
+      background: rgba(255,255,255,0.10);
+    }
+
+    .pill {
+      padding: 6px 9px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      line-height: 1;
+      cursor: pointer;
+      user-select: none;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+
+    .pill.active {
+      background: rgba(82, 215, 255, 0.16);
+      border-color: rgba(82, 215, 255, 0.32);
+      color: #b5f8ff;
+    }
+
+    .compactGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .statsGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .metric {
+      padding: 10px 11px;
+      border-radius: 15px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+    }
+
+    .metricK {
+      font-size: 11px;
+      color: var(--muted-2);
+      font-weight: 700;
+    }
+
+    .metricV {
+      margin-top: 4px;
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: -0.02em;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .legendItem {
+      display: grid;
+      grid-template-columns: 12px 1fr auto auto;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+      padding: 5px 0;
+    }
+
+    .legendItem .name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .legendItem .n,
+    .legendItem .mw {
+      color: var(--muted);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: var(--muted-2);
+      line-height: 1.35;
+    }
+
+    .controlLine {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    select,
+    input[type="text"],
+    input[type="url"] {
+      width: 100%;
+      padding: 9px 10px;
+      box-sizing: border-box;
+    }
+
+    .chipBar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    #topRight {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      z-index: 1050;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+    }
+
+    #statusPill {
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text);
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .statusDot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #3cff8f;
+      box-shadow: 0 0 10px rgba(60, 255, 143, 0.75);
+    }
+
+    #topActions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .topBtn {
+      width: 40px;
+      height: 40px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      user-select: none;
+      font-size: 15px;
+    }
+
+    #bottomCards {
+      position: absolute;
+      left: calc(14px + var(--left-rail-w) + 12px);
+      bottom: 14px;
+      z-index: 1040;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    .miniCard {
+      width: 78px;
+      height: 78px;
+      border-radius: 18px;
+      overflow: hidden;
+      padding: 10px;
+      box-sizing: border-box;
+      position: relative;
+      cursor: pointer;
+      border: 1px solid rgba(255,255,255,0.13);
+      background:
+        linear-gradient(180deg, rgba(28, 41, 83, 0.34), rgba(5, 10, 22, 0.92)),
+        radial-gradient(circle at 30% 20%, rgba(75, 204, 255, 0.28), transparent 35%),
+        radial-gradient(circle at 70% 70%, rgba(166, 86, 255, 0.22), transparent 30%);
+      box-shadow: var(--shadow);
+    }
+
+    .miniCard::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(86, 194, 255, 0.28), transparent 40%, rgba(199, 102, 255, 0.16));
+      pointer-events: none;
+    }
+
+    .miniCard span {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      font-size: 12px;
+      font-weight: 800;
+      z-index: 1;
+    }
+
+    #globeWidget {
+      position: absolute;
+      right: 18px;
+      bottom: 18px;
+      width: 88px;
+      height: 88px;
+      border-radius: 999px;
+      z-index: 1010;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: radial-gradient(circle at 52% 44%, rgba(39, 74, 155, 0.85), rgba(5, 10, 22, 0.95) 66%);
+      box-shadow: 0 0 0 1px rgba(82, 215, 255, 0.1), 0 18px 40px rgba(0,0,0,0.36);
+      pointer-events: none;
+    }
+
+    #globeWidget::before {
+      content: "";
+      position: absolute;
+      inset: 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(82, 215, 255, 0.18);
+      box-shadow: inset 0 0 24px rgba(82,215,255,0.16);
+    }
+
+    #globeWidget::after {
+      content: "";
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #9ff6ff;
+      left: 46px;
+      top: 39px;
+      box-shadow: 0 0 18px rgba(159,246,255,0.9);
+    }
+
+    #creditsDrawer,
+    #loaderModal,
+    #toast {
+      z-index: 1300;
+    }
+
+    #creditsDrawer {
+      position: absolute;
+      right: 14px;
+      top: 122px;
+      width: min(430px, calc(100vw - 28px));
+      max-height: calc(100vh - 150px);
+      overflow: auto;
+      border-radius: 20px;
+      padding: 14px;
+      display: none;
+      background: var(--panel-solid);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+
+    #creditsDrawer.open {
+      display: block;
+    }
+
+    .creditRow {
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .creditRow:last-child {
+      border-bottom: 0;
+    }
+
+    .creditTitle {
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .creditText {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    #loaderModal {
+      position: absolute;
+      inset: 0;
+      display: none;
+      place-items: center;
+      background: rgba(0,0,0,0.28);
+      backdrop-filter: blur(3px);
+    }
+
+    #loaderModal.open {
+      display: grid;
+    }
+
+    #loaderCard {
+      width: min(520px, calc(100vw - 32px));
+      border-radius: 22px;
+      padding: 16px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: var(--panel-solid);
+      box-shadow: var(--shadow);
+    }
+
+    #loaderTitle {
+      font-size: 16px;
+      font-weight: 900;
+      margin: 0 0 6px;
+    }
+
+    #loaderSub {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+      margin-bottom: 12px;
+    }
+
+    #progressBar {
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.08);
+      margin-bottom: 10px;
+    }
+
+    #progressBar > div {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #57d2ff, #7d89ff, #25efb8);
+    }
+
+    #loaderActions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    #loaderFile,
+    #loaderUrl {
+      width: 100%;
+    }
+
+    #toast {
+      position: absolute;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      padding: 12px 16px;
+      border-radius: 999px;
+      background: rgba(8, 13, 28, 0.92);
+      border: 1px solid rgba(255,255,255,0.12);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      display: none;
+      pointer-events: none;
+    }
+
+    .toastShow {
+      display: block !important;
+    }
+
+    .leaflet-container {
+      background: #02050d;
+      font-family: Inter, Arial, Helvetica, sans-serif;
+    }
+
+    .leaflet-control-attribution {
+      background: rgba(8,13,28,0.78) !important;
+      color: rgba(255,255,255,0.78) !important;
+      border-radius: 10px 0 0 0;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      border-left: 1px solid rgba(255,255,255,0.08);
+      padding: 4px 8px !important;
+    }
+
+    .leaflet-control-attribution a,
+    .leaflet-popup-content a {
+      color: #9ff6ff;
+    }
+
+    .leaflet-popup-content-wrapper,
+    .leaflet-popup-tip {
+      background: rgba(8, 13, 28, 0.95);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.12);
+      box-shadow: var(--shadow);
+    }
+
+    .leaflet-popup-content {
+      margin: 12px 14px;
+      min-width: 220px;
+    }
+
+    .popupTitle {
+      font-size: 14px;
+      font-weight: 900;
+      margin-bottom: 3px;
+    }
+
+    .popupSub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .popupGrid {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 5px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .popupGrid b {
+      color: var(--text);
+    }
+
+    .transmission-glow,
+    .pipeline-glow,
+    .rail-glow,
+    .highway-glow,
+    .waterway-glow,
+    .corridor-glow,
+    .cable-glow,
+    .osm-power-glow {
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 0 5px rgba(82, 215, 255, 0.25)) drop-shadow(0 0 12px rgba(82, 215, 255, 0.10));
+    }
+
+    .pipeline-glow {
+      filter: drop-shadow(0 0 5px rgba(150, 120, 255, 0.25)) drop-shadow(0 0 12px rgba(150, 120, 255, 0.10));
+    }
+
+    .rail-glow {
+      filter: drop-shadow(0 0 4px rgba(85, 190, 255, 0.20));
+    }
+
+    .highway-glow {
+      filter: drop-shadow(0 0 4px rgba(255, 174, 92, 0.18));
+    }
+
+    .waterway-glow {
+      filter: drop-shadow(0 0 4px rgba(63, 214, 186, 0.18));
+    }
+
+    .corridor-glow {
+      filter: drop-shadow(0 0 5px rgba(255, 204, 82, 0.18));
+    }
+
+    .cable-glow {
+      filter: drop-shadow(0 0 5px rgba(94, 224, 255, 0.2));
+    }
+
+    .osm-power-glow {
+      filter: drop-shadow(0 0 6px rgba(164, 136, 255, 0.18));
+    }
+
+    .marker-cluster-small,
+    .marker-cluster-medium,
+    .marker-cluster-large {
+      background: rgba(82, 215, 255, 0.20);
+      border: 1px solid rgba(82, 215, 255, 0.25);
+    }
+
+    .marker-cluster-small div,
+    .marker-cluster-medium div,
+    .marker-cluster-large div {
+      background: rgba(8, 13, 28, 0.96);
+      color: #bdf7ff;
+      font-weight: 900;
+      border: 1px solid rgba(82, 215, 255, 0.24);
+    }
+
+    @media (max-width: 1080px) {
+      #sidebar {
+        width: min(360px, calc(100vw - 92px));
+      }
+
+      #bottomCards {
+        display: none;
+      }
+    }
+
+    @media (max-width: 820px) {
+      #sidebar {
+        width: calc(100vw - 92px);
+      }
+
+      #globeWidget {
+        width: 72px;
+        height: 72px;
+      }
+    }
+  
+
+    /* ===== OGW-inspired interface overrides ===== */
+    :root {
+      --left-rail-w: 40px;
+      --sidebar-w: 278px;
+    }
+
+    #leftRail {
+      width: var(--left-rail-w);
+      gap: 8px;
+      padding: 8px 0;
+      border-radius: 16px;
+      background: rgba(5, 9, 20, 0.92);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+    }
+
+    .logoBtn {
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .logoMark {
+      width: 18px;
+      height: 18px;
+      position: relative;
+      transform: skewY(-8deg);
+      filter: drop-shadow(0 0 8px rgba(161, 132, 255, 0.42));
+    }
+
+    .logoMark span {
+      position: absolute;
+      bottom: 0;
+      width: 4px;
+      border-radius: 3px 3px 1px 1px;
+      background: linear-gradient(180deg, #ff4ba0, #845fff 48%, #35dcff);
+      box-shadow: 0 0 12px rgba(115, 138, 255, 0.34);
+    }
+
+    .logoMark span:nth-child(1) { left: 0; height: 8px; }
+    .logoMark span:nth-child(2) { left: 6px; height: 12px; }
+    .logoMark span:nth-child(3) { left: 12px; height: 16px; }
+
+    .railBtn {
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
+      font-size: 12px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.045);
+      box-shadow: none;
+    }
+
+    #sidebar {
+      left: calc(14px + var(--left-rail-w) + 10px);
+      width: var(--sidebar-w);
+      border-radius: 20px;
+      background:
+        radial-gradient(circle at top left, rgba(58, 99, 188, 0.16), transparent 30%),
+        linear-gradient(180deg, rgba(8, 13, 28, 0.95), rgba(4, 8, 18, 0.94));
+      transition: transform 160ms ease, opacity 160ms ease;
+    }
+
+    #sidebar::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 0% 0%, rgba(102, 211, 255, 0.10), transparent 20%),
+        linear-gradient(180deg, rgba(255,255,255,0.03), transparent 20%);
+      opacity: 0.9;
+    }
+
+    .hiddenSidebar {
+      transform: translateX(calc(-1 * (var(--sidebar-w) + 36px)));
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #sidebarHeader {
+      position: relative;
+      z-index: 1;
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    #titleRow {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .brandChip {
+      width: 26px;
+      height: 26px;
+      border-radius: 9px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.10);
+      display: grid;
+      place-items: center;
+      flex: none;
+      margin-top: 1px;
+    }
+
+    .titleTextWrap {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    #titleLine {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    #regionTitle {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      line-height: 1.2;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    #heroStats {
+      margin-top: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      color: rgba(255,255,255,0.82);
+    }
+
+    #headerTools {
+      display: flex;
+      gap: 6px;
+      margin-left: auto;
+      flex: none;
+    }
+
+    .panelIcon,
+    .panelTinyIcon {
+      width: 24px;
+      height: 24px;
+      border-radius: 9px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.88);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      user-select: none;
+      font-size: 11px;
+      padding: 0;
+    }
+
+    .panelTinyIcon {
+      width: 22px;
+      height: 22px;
+      border-radius: 8px;
+      font-size: 10px;
+    }
+
+    #statusToggleRow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .compactCheck {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 800;
+      color: rgba(255,255,255,0.92);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .compactCheck input {
+      width: 14px;
+      height: 14px;
+      accent-color: #baf4ff;
+    }
+
+    #sidebarBody {
+      position: relative;
+      z-index: 1;
+      padding: 4px 10px 10px;
+      overflow: auto;
+    }
+
+    .ghostMetrics {
+      display: none;
+    }
+
+    .section {
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      margin-bottom: 8px;
+      overflow: visible;
+    }
+
+    .sectionHeader {
+      padding: 8px 2px 6px;
+      border-bottom: none;
+      cursor: pointer;
+    }
+
+    .sectionHeaderTitle {
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .sectionBody {
+      padding: 0 2px 6px;
+    }
+
+    .sectionMeta {
+      font-size: 10px;
+      color: rgba(255,255,255,0.46);
+    }
+
+    .row {
+      padding: 5px 4px;
+      margin-bottom: 4px;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+    }
+
+    .rowMain {
+      gap: 8px;
+    }
+
+    .swatch {
+      width: 8px;
+      height: 8px;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.16), 0 0 10px rgba(255,255,255,0.08);
+    }
+
+    .diamondSwatch {
+      transform: rotate(45deg);
+      border-radius: 2px;
+    }
+
+    .lineSwatch {
+      width: 11px;
+      height: 2px;
+      border-radius: 999px;
+      background: var(--line, #59d8ff);
+      box-shadow: 0 0 10px color-mix(in srgb, var(--line, #59d8ff) 50%, transparent);
+    }
+
+    .rowLabel {
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .rowSub {
+      font-size: 10px;
+      color: rgba(255,255,255,0.50);
+      margin-top: 1px;
+    }
+
+    .toggle {
+      width: 34px;
+      height: 18px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+    }
+
+    .toggle::after {
+      top: 2px;
+      left: 2px;
+      width: 12px;
+      height: 12px;
+    }
+
+    .toggle.on::after {
+      transform: translateX(16px);
+    }
+
+    .smallBtn,
+    .pill,
+    select,
+    input[type="text"],
+    input[type="url"] {
+      border-radius: 10px;
+      font-size: 11px;
+    }
+
+    .smallBtn {
+      padding: 6px 8px;
+      font-size: 10px;
+      letter-spacing: 0.02em;
+    }
+
+    .pill {
+      padding: 5px 8px;
+      font-size: 10px;
+      margin-right: 4px;
+      margin-bottom: 4px;
+    }
+
+    input[type="text"],
+    input[type="url"],
+    select {
+      padding: 8px 10px;
+      font-size: 11px;
+    }
+
+    #plantSearch {
+      margin-top: 4px;
+    }
+
+    .hint {
+      font-size: 10px;
+      color: rgba(255,255,255,0.46);
+      line-height: 1.35;
+    }
+
+    .controlLine {
+      margin-top: 6px;
+      gap: 6px;
+    }
+
+    .legendItem {
+      grid-template-columns: 12px minmax(0, 1fr) auto auto;
+      gap: 6px;
+      padding: 3px 0;
+      font-size: 11px;
+    }
+
+    .legendItem .name,
+    .legendItem .n,
+    .legendItem .mw {
+      font-size: 10px;
+    }
+
+    .legendItem .name {
+      color: rgba(255,255,255,0.92);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .legendItem .n,
+    .legendItem .mw {
+      color: rgba(255,255,255,0.66);
+      font-weight: 800;
+    }
+
+    .sizeLegendWrap {
+      padding: 2px 0 2px;
+    }
+
+    .sizeLegend {
+      display: flex;
+      align-items: flex-end;
+      gap: 14px;
+      min-height: 76px;
+    }
+
+    .sizeRings {
+      position: relative;
+      width: 70px;
+      height: 66px;
+      flex: none;
+    }
+
+    .sizeRing {
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      transform: translateX(-50%);
+      border: 1px solid rgba(255,255,255,0.26);
+      border-radius: 999px;
+      background: radial-gradient(circle at 40% 30%, rgba(255,255,255,0.07), rgba(255,255,255,0.02));
+    }
+
+    .sizeLabels {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding-bottom: 2px;
+      font-size: 10px;
+      font-weight: 800;
+      color: rgba(255,255,255,0.70);
+    }
+
+    #bubbleMeta {
+      margin-top: 6px;
+      font-size: 10px;
+      color: rgba(255,255,255,0.48);
+    }
+
+    #topRight {
+      top: 12px;
+      right: 12px;
+      gap: 8px;
+    }
+
+    #statusPill {
+      padding: 7px 10px;
+      font-size: 11px;
+      border-radius: 999px;
+      background: rgba(5, 9, 20, 0.82);
+    }
+
+    #topActions {
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: 420px;
+    }
+
+    .topBtn {
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
+      font-size: 11px;
+      background: rgba(5, 9, 20, 0.82);
+    }
+
+    #bottomCards {
+      left: calc(14px + var(--left-rail-w) + 10px);
+      bottom: 12px;
+      gap: 8px;
+    }
+
+    .miniCard {
+      width: 74px;
+      height: 74px;
+      border-radius: 16px;
+      background:
+        linear-gradient(180deg, rgba(17, 28, 56, 0.28), rgba(5, 10, 22, 0.92)),
+        radial-gradient(circle at 20% 20%, rgba(75, 204, 255, 0.34), transparent 34%),
+        radial-gradient(circle at 70% 72%, rgba(166, 86, 255, 0.22), transparent 28%);
+    }
+
+    .miniCard::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(140deg, rgba(92, 216, 255, 0.18), transparent 45%, rgba(255,255,255,0.04));
+      pointer-events: none;
+    }
+
+    .miniCard span {
+      font-size: 11px;
+      line-height: 1.05;
+    }
+
+    #globeWidget {
+      width: 82px;
+      height: 82px;
+      right: 18px;
+      bottom: 18px;
+      background: radial-gradient(circle at 52% 44%, rgba(27, 63, 140, 0.84), rgba(5, 10, 22, 0.95) 66%);
+    }
+
+    #globeInfoBtn {
+      position: absolute;
+      right: 10px;
+      bottom: 8px;
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      z-index: 1040;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      background: rgba(5, 9, 20, 0.82);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.92);
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #mapDock {
+      position: absolute;
+      top: 14px;
+      left: calc(14px + var(--left-rail-w) + var(--sidebar-w) + 22px);
+      z-index: 1045;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .mapDockBtn {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(5, 9, 20, 0.84);
+      color: rgba(255,255,255,0.92);
+      box-shadow: var(--shadow);
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      cursor: pointer;
+      user-select: none;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    .mapDockBtn:hover,
+    .panelIcon:hover,
+    .panelTinyIcon:hover,
+    .topBtn:hover {
+      background: rgba(82, 215, 255, 0.16);
+      border-color: rgba(82, 215, 255, 0.28);
+    }
+
+    .inlineSplit {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .inlineSplit .hint {
+      margin-top: 0;
+    }
+
+    .sourceRow {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .sidebarNote {
+      margin-top: 4px;
+      font-size: 10px;
+      color: rgba(255,255,255,0.46);
+    }
+
+    .leaflet-popup-content {
+      margin: 10px 12px;
+      min-width: 220px;
+    }
+
+    .popupTitle {
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+
+    .popupSub {
+      font-size: 11px;
+      margin-bottom: 8px;
+    }
+
+    .popupGrid {
+      grid-template-columns: 88px 1fr;
+      gap: 4px 8px;
+      font-size: 11px;
+    }
+
+    @media (max-width: 1080px) {
+      #mapDock {
+        display: none;
+      }
+    }
+
+    @media (max-width: 820px) {
+      #sidebar {
+        width: min(320px, calc(100vw - 78px));
+      }
+
+      #topActions {
+        max-width: 200px;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="leftRail" class="glass">
+    <div class="railBtn active" id="railLayersBtn" title="Layers">≡</div>
+    <div class="railBtn" id="railLoaderBtn" title="Load source">＋</div>
+    <div class="railBtn" id="railCreditsBtn" title="Credits">ⓘ</div>
+    <div style="flex:1 1 auto;"></div>
+    <div class="railBtn" id="railHomeBtn" title="Home extent">⌖</div>
+  </div>
+
+  <aside id="sidebar" class="glass">
+    <div id="sidebarHeader">
+      <div class="eyebrow">
+        <div class="spark"></div>
+        <div class="badge">BETA</div>
+      </div>
+      <h1>North America<br>Power Atlas</h1>
+      <div id="heroStats">0 live layers | 0 loaded features</div>
+    </div>
+
+    <div id="sidebarBody">
+      <div class="statsGrid">
+        <div class="metric">
+          <div class="metricK">Visible plants</div>
+          <div class="metricV" id="metricPlants">0</div>
+        </div>
+        <div class="metric">
+          <div class="metricK">Visible MW</div>
+          <div class="metricV" id="metricMW">0</div>
+        </div>
+        <div class="metric">
+          <div class="metricK">Data centers</div>
+          <div class="metricV" id="metricDataCenters">0</div>
+        </div>
+        <div class="metric">
+          <div class="metricK">Transmission miles*</div>
+          <div class="metricV" id="metricTransmission">0</div>
+        </div>
+      </div>
+
+      <div class="section" id="sectionBasemap">
+        <div class="sectionHeader">
+          <div class="sectionHeaderTitle">Map type</div>
+          <div class="sectionMeta" id="basemapMeta">Dark Matter</div>
+        </div>
+        <div class="sectionBody">
+          <div class="chipBar" id="basemapChips"></div>
+          <div class="hint">Dark first. Light, topo, OSM, and night imagery are also wired in.</div>
+        </div>
+      </div>
+
+      <div class="section" id="sectionGeneration">
+        <div class="sectionHeader">
+          <div class="sectionHeaderTitle">Power plants</div>
+          <div class="sectionMeta" id="plantsMeta">EIA / GEM</div>
+        </div>
+        <div class="sectionBody">
+          <div class="row" data-layer="eia-custom">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ffd54f"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">EIA plants</div>
+                <div class="rowSub">Load your EIA-860M CSV or workbook</div>
+              </div>
+            </div>
+            <div class="controlLine">
+              <button class="smallBtn" data-open-loader="eia">Load</button>
+            </div>
+          </div>
+
+          <div class="row" data-layer="gem-power">
+            <div class="rowMain">
+              <div class="swatch" style="background:#8cf3ff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">Global Energy Monitor</div>
+                <div class="rowSub">Global Integrated Power Tracker</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="gem-power"></div>
+          </div>
+
+          <div class="chipBar" id="plantStatusBar">
+            <div class="pill active" data-plant-status="all">All</div>
+            <div class="pill" data-plant-status="operating">Operating</div>
+            <div class="pill" data-plant-status="retired">Retired</div>
+          </div>
+
+          <input type="text" id="plantSearch" placeholder="Plant or owner search" />
+          <div class="hint" style="margin-top:8px;">GEM is live from ArcGIS. EIA is file-first because the monthly plant inventory is distributed as downloadable files.</div>
+
+          <div class="stack" style="margin-top:10px;">
+            <div class="sectionMeta">Technology</div>
+            <div id="technologyLegend"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="sectionDataCenters">
+        <div class="sectionHeader">
+          <div class="sectionHeaderTitle">Data centers</div>
+          <div class="sectionMeta">IM3 / Epoch</div>
+        </div>
+        <div class="sectionBody">
+          <div class="row" data-layer="im3-existing-centroids">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ffffff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">IM3 existing</div>
+                <div class="rowSub">Centroids from the open atlas</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="im3-existing-centroids"></div>
+          </div>
+
+          <div class="row" data-layer="im3-footprints">
+            <div class="rowMain">
+              <div class="swatch" style="background:#b9fff5"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">IM3 footprints</div>
+                <div class="rowSub">Facility footprints when available</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="im3-footprints"></div>
+          </div>
+
+          <div class="row" data-layer="im3-projected">
+            <div class="rowMain">
+              <div class="swatch" style="background:#98a9ff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">IM3 projected</div>
+                <div class="rowSub">Scenario selector below</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="im3-projected"></div>
+          </div>
+
+          <div class="compactGrid">
+            <select id="im3GrowthSelect">
+              <option value="moderate_growth">Moderate growth</option>
+              <option value="low_growth">Low growth</option>
+              <option value="high_growth">High growth</option>
+              <option value="higher_growth">Higher growth</option>
+            </select>
+            <select id="im3MarketGravitySelect">
+              <option value="50">50% gravity</option>
+              <option value="0">0% gravity</option>
+              <option value="25">25% gravity</option>
+              <option value="75">75% gravity</option>
+              <option value="100">100% gravity</option>
+            </select>
+          </div>
+
+          <div class="row" data-layer="epoch-frontier">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ff82cb"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">Epoch frontier</div>
+                <div class="rowSub">Large AI data center dataset</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="epoch-frontier"></div>
+          </div>
+
+          <div class="hint">The IM3 atlas supplies existing and projected center GeoJSON in its public repo. Epoch exposes a public CSV for frontier AI sites.</div>
+        </div>
+      </div>
+
+      <div class="section" id="sectionTransmission">
+        <div class="sectionHeader">
+          <div class="sectionHeaderTitle">Transmission</div>
+          <div class="sectionMeta">Grid backbone</div>
+        </div>
+        <div class="sectionBody">
+          <div class="row" data-layer="hifld-transmission">
+            <div class="rowMain">
+              <div class="swatch" style="background:#59d8ff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">HIFLD transmission</div>
+                <div class="rowSub">Live from public ArcGIS service</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="hifld-transmission"></div>
+          </div>
+
+          <div class="row" data-layer="hifld-substations">
+            <div class="rowMain">
+              <div class="swatch" style="background:#f3f6ff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">HIFLD substations</div>
+                <div class="rowSub">Clustered at small scales</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="hifld-substations"></div>
+          </div>
+
+          <div class="row" data-layer="ourgridfuture">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ff73b3"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">Our Grid Future planned</div>
+                <div class="rowSub">Load workbook or GIS file</div>
+              </div>
+            </div>
+            <div class="controlLine">
+              <button class="smallBtn" data-open-loader="ourgridfuture">Load</button>
+            </div>
+          </div>
+
+          <div class="row" data-layer="section-368">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ffcf52"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">Section 368 corridors</div>
+                <div class="rowSub">West-wide designated corridors</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="section-368"></div>
+          </div>
+
+          <div class="stack" style="margin-top:10px;">
+            <div class="sectionMeta">Voltage buckets</div>
+            <div id="voltageLegend"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="sectionTransport">
+        <div class="sectionHeader">
+          <div class="sectionHeaderTitle">Transport and corridors</div>
+          <div class="sectionMeta">Rail / road / water</div>
+        </div>
+        <div class="sectionBody">
+          <div class="row" data-layer="narn-rail">
+            <div class="rowMain">
+              <div class="swatch" style="background:#68bfff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">FRA / BTS NARN rail</div>
+                <div class="rowSub">North American rail network</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="narn-rail"></div>
+          </div>
+
+          <div class="row" data-layer="nhs-highways">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ffb668"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">FHWA / BTS NHS</div>
+                <div class="rowSub">Interstates and arterials</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="nhs-highways"></div>
+          </div>
+
+          <div class="row" data-layer="nwn-waterways">
+            <div class="rowMain">
+              <div class="swatch" style="background:#35e1c3"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">USACE NWN</div>
+                <div class="rowSub">National Waterway Network</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="nwn-waterways"></div>
+          </div>
+
+          <div class="row" data-layer="tele-custom">
+            <div class="rowMain">
+              <div class="swatch" style="background:#70f2ff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">TeleGeography submarine cables</div>
+                <div class="rowSub">Load GeoJSON or other cable geometry</div>
+              </div>
+            </div>
+            <div class="controlLine">
+              <button class="smallBtn" data-open-loader="tele">Load</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="sectionRisk">
+        <div class="sectionHeader">
+          <div class="sectionHeaderTitle">Risk and enabling infrastructure</div>
+          <div class="sectionMeta">Water / fuel / EV / OSM</div>
+        </div>
+        <div class="sectionBody">
+          <div class="row" data-layer="aqueduct-risk">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ff8f66"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">WRI Aqueduct 4.0</div>
+                <div class="rowSub">Baseline annual water stress</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="aqueduct-risk"></div>
+          </div>
+
+          <div class="row" data-layer="hifld-gas">
+            <div class="rowMain">
+              <div class="swatch" style="background:#a784ff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">Natural gas pipelines</div>
+                <div class="rowSub">HIFLD public service</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="hifld-gas"></div>
+          </div>
+
+          <div class="row" data-layer="afdc-ev">
+            <div class="rowMain">
+              <div class="swatch" style="background:#ffffff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">AFDC EV charging</div>
+                <div class="rowSub">NREL station locator API</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="afdc-ev"></div>
+          </div>
+
+          <div class="row" data-layer="osm-power">
+            <div class="rowMain">
+              <div class="swatch" style="background:#c48dff"></div>
+              <div class="rowLabelWrap">
+                <div class="rowLabel">OSM power layer</div>
+                <div class="rowSub">Live Overpass query in current map view</div>
+              </div>
+            </div>
+            <div class="toggle" data-toggle-layer="osm-power"></div>
+          </div>
+
+          <div class="hint">A few heavy layers are viewport-aware. If you want cleaner detail, zoom in once they are enabled.</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div id="topRight">
+    <div id="statusPill" class="glass"><div class="statusDot"></div><span id="statusText">0 live layers | 0 loaded features</span></div>
+    <div id="topActions">
+      <div class="topBtn glass" id="fitBtn" title="Fit North America">⌖</div>
+      <div class="topBtn glass" id="refreshBtn" title="Refresh live layers">↻</div>
+      <div class="topBtn glass" id="basemapBtn" title="Cycle basemap">◐</div>
+      <div class="topBtn glass" id="creditsBtn" title="Sources and credits">ⓘ</div>
+    </div>
+  </div>
+
+  <div id="bottomCards">
+    <div class="miniCard" data-scroll-target="sectionGeneration"><span>Layers</span></div>
+    <div class="miniCard" data-open-loader="custom"><span>Custom</span></div>
+    <div class="miniCard" data-scroll-target="sectionBasemap"><span>Map Type</span></div>
+  </div>
+
+  <div id="globeWidget"></div>
+
+  <div id="creditsDrawer">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
+      <div>
+        <div style="font-size:16px;font-weight:900;">Sources and credits</div>
+        <div class="hint">Visible map layers, licenses, and source notes.</div>
+      </div>
+      <button class="smallBtn" id="closeCreditsBtn">Close</button>
+    </div>
+    <div id="creditsBody"></div>
+  </div>
+
+  <div id="loaderModal">
+    <div id="loaderCard">
+      <div id="loaderTitle">Load source</div>
+      <div id="loaderSub">Choose a local file or paste a remote URL. GeoJSON, CSV, XLSX, KMZ/KML, and zipped shapefiles are supported for the custom loaders below.</div>
+      <div class="compactGrid" style="margin-bottom:8px;">
+        <select id="loaderTarget">
+          <option value="eia">EIA plants</option>
+          <option value="ourgridfuture">Our Grid Future planned transmission</option>
+          <option value="tele">TeleGeography / cable geometry</option>
+          <option value="custom">Generic custom layer</option>
+        </select>
+        <select id="loaderMode">
+          <option value="file">Load local file</option>
+          <option value="url">Load remote URL</option>
+        </select>
+      </div>
+      <input id="loaderFile" type="file" />
+      <input id="loaderUrl" type="url" placeholder="https://..." style="display:none;margin-top:8px;" />
+      <div id="progressBar" style="margin-top:12px;"><div></div></div>
+      <div class="hint" id="loaderHint">Local files stay in your browser session. Remote URLs still need to allow browser access.</div>
+      <div id="loaderActions">
+        <button class="smallBtn" id="loaderSubmitBtn">Load</button>
+        <button class="smallBtn" id="loaderDemoBtn">Load source default</button>
+        <button class="smallBtn" id="loaderCancelBtn">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    const fmtInt = (n) => Number.isFinite(n) ? Math.round(n).toLocaleString() : "0";
+    const fmt1 = (n) => Number.isFinite(n) ? Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 }) : "0";
+    const fmtMW = (n) => {
+      if (!Number.isFinite(n)) return "0";
+      const abs = Math.abs(n);
+      if (abs >= 1000) return `${fmt1(n / 1000)} GW`;
+      return `${fmt1(n)} MW`;
+    };
+    const escapeHtml = (s) => String(s ?? "").replace(/[&<>\"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m]));
+    const debounce = (fn, wait = 220) => {
+      let t = null;
+      return (...args) => {
+        clearTimeout(t);
+        t = setTimeout(() => fn(...args), wait);
+      };
+    };
+
+    const TECHNOLOGY_COLORS = {
+      solar: '#ffd54f',
+      wind: '#61d6ff',
+      'offshore wind': '#8bdcff',
+      storage: '#ff3fa6',
+      batteries: '#ff3fa6',
+      'pumped storage': '#5fc9ff',
+      hydro: '#45d0ff',
+      nuclear: '#69ffd6',
+      gas: '#b483ff',
+      coal: '#b8bfd5',
+      oil: '#ff7d92',
+      geothermal: '#7bff73',
+      biomass: '#9ae04e',
+      waste: '#91a0b9',
+      other: '#cfd7ea'
+    };
+
+    function technologyColor(name) {
+      const key = String(name || '').toLowerCase();
+      if (key.includes('solar')) return TECHNOLOGY_COLORS.solar;
+      if (key.includes('offshore')) return TECHNOLOGY_COLORS['offshore wind'];
+      if (key.includes('wind')) return TECHNOLOGY_COLORS.wind;
+      if (key.includes('battery') || key.includes('storage')) return TECHNOLOGY_COLORS.storage;
+      if (key.includes('pumped')) return TECHNOLOGY_COLORS['pumped storage'];
+      if (key.includes('hydro')) return TECHNOLOGY_COLORS.hydro;
+      if (key.includes('nuclear')) return TECHNOLOGY_COLORS.nuclear;
+      if (key.includes('gas')) return TECHNOLOGY_COLORS.gas;
+      if (key.includes('coal')) return TECHNOLOGY_COLORS.coal;
+      if (key.includes('petroleum') || key.includes('oil')) return TECHNOLOGY_COLORS.oil;
+      if (key.includes('geo')) return TECHNOLOGY_COLORS.geothermal;
+      if (key.includes('biomass') || key.includes('wood')) return TECHNOLOGY_COLORS.biomass;
+      if (key.includes('waste')) return TECHNOLOGY_COLORS.waste;
+      return TECHNOLOGY_COLORS.other;
+    }
+
+    function normalizeVoltage(value) {
+      if (value == null) return null;
+      const text = String(value).trim();
+      if (!text) return null;
+      const nums = text.match(/\d+(?:\.\d+)?/g);
+      if (!nums || !nums.length) return null;
+      const maxVal = Math.max(...nums.map(Number));
+      return maxVal > 2000 ? maxVal / 1000 : maxVal;
+    }
+
+    function voltageBucket(kv) {
+      if (!Number.isFinite(kv)) return 'Unknown';
+      if (kv >= 735) return '735kV+';
+      if (kv >= 500) return '500-734kV';
+      if (kv >= 345) return '345-499kV';
+      if (kv >= 230) return '230-344kV';
+      if (kv >= 100) return '100-229kV';
+      if (kv >= 31) return '31-99kV';
+      return '<31kV';
+    }
+
+    function pick(obj, names) {
+      if (!obj) return undefined;
+      const keys = Object.keys(obj);
+      const normalized = new Map(keys.map((k) => [k.toLowerCase().replace(/[^a-z0-9]+/g, ''), k]));
+      for (const name of names) {
+        const hit = normalized.get(name.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+        if (hit) return obj[hit];
+      }
+      return undefined;
+    }
+
+    function parsePlantStatus(raw) {
+      const value = String(raw || '').toLowerCase();
+      if (!value) return 'unknown';
+      if (value.includes('ret')) return 'retired';
+      if (value.includes('op') || value.includes('operat') || value.includes('exist')) return 'operating';
+      return value;
+    }
+
+    function radiusFromCapacity(mw) {
+      const x = Number(mw);
+      if (!Number.isFinite(x) || x <= 0) return 3;
+      return Math.max(3, Math.min(15, 2.8 + Math.sqrt(x) * 0.18));
+    }
+
+    function toMiles(geojson) {
+      if (!geojson || !Array.isArray(geojson.features)) return 0;
+      let totalKm = 0;
+      for (const feature of geojson.features) {
+        const g = feature && feature.geometry;
+        if (!g) continue;
+        const segments = [];
+        if (g.type === 'LineString') segments.push(g.coordinates);
+        if (g.type === 'MultiLineString') segments.push(...g.coordinates);
+        for (const coords of segments) {
+          for (let i = 1; i < coords.length; i++) {
+            const [lon1, lat1] = coords[i - 1];
+            const [lon2, lat2] = coords[i];
+            if (![lon1, lat1, lon2, lat2].every(Number.isFinite)) continue;
+            const r = 6371;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            totalKm += r * c;
+          }
+        }
+      }
+      return totalKm * 0.621371;
+    }
+
+    function ensurePopup(feature, extraRows = []) {
+      const p = feature.properties || {};
+      const title = pick(p, ['plant_name', 'plantname', 'Plant___Project_name', 'name', 'station_name', 'site_name', 'project_name']) || 'Feature';
+      const subtitle = pick(p, ['technology', 'fuel_type', 'Fuel', 'status', 'CATEGORY', 'voltageclass']) || pick(p, ['company', 'operator', 'owner']) || '';
+      const rows = [
+        ['Technology', pick(p, ['technology', 'fuel_type', 'Fuel'])],
+        ['Owner', pick(p, ['entity_name', 'owner', 'company', 'operator', 'Owner'])],
+        ['Status', pick(p, ['status', 'Status'])],
+        ['State', pick(p, ['state', 'STATE_ABBR', 'Plant_State', 'stateprov', 'STATE'])],
+        ['Voltage', pick(p, ['voltage', 'MAX_VOLT', 'max_voltage', 'MAXVOLT'])],
+        ['Capacity', pick(p, ['nameplate_mw', 'mw', 'capacity_mw', 'Capacity_MW'])],
+        ...extraRows
+      ].filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== '');
+      return `
+        <div class="popupTitle">${escapeHtml(title)}</div>
+        <div class="popupSub">${escapeHtml(subtitle)}</div>
+        <div class="popupGrid">
+          ${rows.map(([k, v]) => `<div>${escapeHtml(k)}</div><div><b>${escapeHtml(v)}</b></div>`).join('')}
+        </div>
+      `;
+    }
+
+    const map = L.map('map', {
+      zoomControl: false,
+      worldCopyJump: false,
+      minZoom: 2,
+      maxZoom: 18
+    }).setView([39.5, -98.35], 4);
+
+    const basemaps = {
+      dark: {
+        label: 'Dark Matter',
+        layer: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          subdomains: 'abcd',
+          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+          maxZoom: 20
+        })
+      },
+      light: {
+        label: 'Positron',
+        layer: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+          subdomains: 'abcd',
+          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+          maxZoom: 20
+        })
+      },
+      osm: {
+        label: 'OpenStreetMap',
+        layer: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors',
+          maxZoom: 19
+        })
+      },
+      voyager: {
+        label: 'Voyager',
+        layer: L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+          subdomains: 'abcd',
+          attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+          maxZoom: 20
+        })
+      },
+      night: {
+        label: 'NASA Night',
+        layer: L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_CityLights_2012/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg', {
+          attribution: 'NASA GIBS',
+          maxNativeZoom: 8,
+          maxZoom: 8
+        })
+      }
+    };
+
+    let activeBasemap = 'dark';
+    basemaps[activeBasemap].layer.addTo(map);
+    L.control.zoom({ position: 'topright' }).addTo(map);
+
+    const fitBoundsNorthAmerica = L.latLngBounds([[6, -169], [72, -50]]);
+    function fitHome() { map.fitBounds(fitBoundsNorthAmerica, { padding: [30, 30] }); }
+
+    const app = {
+      plantStatus: 'all',
+      searchText: '',
+      currentLoaderTarget: 'eia',
+      layers: new Map(),
+      customFiles: new Map(),
+      layerOrder: [],
+      credits: [],
+      loading: { on: false }
+    };
+
+    function showToast(text, timeout = 2800) {
+      const el = document.getElementById('toast');
+      el.textContent = text;
+      el.classList.add('toastShow');
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => el.classList.remove('toastShow'), timeout);
+    }
+
+    function setProgress(pct, text) {
+      document.querySelector('#progressBar > div').style.width = `${Math.max(0, Math.min(100, pct))}%`;
+      if (text) document.getElementById('loaderHint').textContent = text;
+    }
+
+    function openLoader(target = 'custom') {
+      document.getElementById('loaderTarget').value = target;
+      document.getElementById('loaderMode').value = 'file';
+      document.getElementById('loaderFile').value = '';
+      document.getElementById('loaderUrl').value = '';
+      document.getElementById('loaderFile').style.display = '';
+      document.getElementById('loaderUrl').style.display = 'none';
+      document.getElementById('loaderModal').classList.add('open');
+      setProgress(0, 'Local files stay in your browser session. Remote URLs still need to allow browser access.');
+      app.currentLoaderTarget = target;
+    }
+
+    function closeLoader() {
+      document.getElementById('loaderModal').classList.remove('open');
+    }
+
+    function setCredits() {
+      const credits = [
+        {
+          title: 'Basemap and attribution',
+          text: 'CARTO Dark Matter / Positron and OpenStreetMap are available in-map. Visible attribution remains on the map at all times.'
+        },
+        {
+          title: 'Data-loading note',
+          text: 'Some sources expose stable public GeoServices or raw files and are loaded directly. File-first sources are wired through the loader so you can supply the exact workbook, CSV, GeoJSON, or shapefile you want to use.'
+        },
+        ...app.credits
+      ];
+      const body = document.getElementById('creditsBody');
+      body.innerHTML = credits.map((c) => `
+        <div class="creditRow">
+          <div class="creditTitle">${escapeHtml(c.title)}</div>
+          <div class="creditText">${escapeHtml(c.text)}</div>
+        </div>
+      `).join('');
+    }
+
+    function toggleCredits(force) {
+      const drawer = document.getElementById('creditsDrawer');
+      const open = typeof force === 'boolean' ? force : !drawer.classList.contains('open');
+      drawer.classList.toggle('open', open);
+      if (open) setCredits();
+    }
+
+    function setBasemap(key) {
+      if (!basemaps[key] || key === activeBasemap) return;
+      map.removeLayer(basemaps[activeBasemap].layer);
+      activeBasemap = key;
+      basemaps[key].layer.addTo(map);
+      document.getElementById('basemapMeta').textContent = basemaps[key].label;
+      document.querySelectorAll('#basemapChips .pill').forEach((pill) => pill.classList.toggle('active', pill.dataset.basemap === key));
+    }
+
+    function nextBasemap() {
+      const keys = Object.keys(basemaps);
+      const i = keys.indexOf(activeBasemap);
+      setBasemap(keys[(i + 1) % keys.length]);
+    }
+
+    function makeBasemapChips() {
+      const wrap = document.getElementById('basemapChips');
+      wrap.innerHTML = Object.entries(basemaps).map(([key, cfg]) => `<div class="pill ${key === activeBasemap ? 'active' : ''}" data-basemap="${key}">${escapeHtml(cfg.label)}</div>`).join('');
+      wrap.addEventListener('click', (e) => {
+        const pill = e.target.closest('[data-basemap]');
+        if (!pill) return;
+        setBasemap(pill.dataset.basemap);
+      });
+    }
+
+    function registerLayer(def) {
+      const layer = {
+        id: def.id,
+        label: def.label,
+        type: def.type,
+        visible: false,
+        loaded: false,
+        loading: false,
+        data: null,
+        group: null,
+        count: 0,
+        stats: {},
+        destroyers: [],
+        ...def
+      };
+      app.layers.set(layer.id, layer);
+      app.layerOrder.push(layer.id);
+      if (def.credit) app.credits.push(def.credit);
+      return layer;
+    }
+
+    function setToggleUi(id, on) {
+      const el = document.querySelector(`[data-toggle-layer="${id}"]`);
+      if (el) el.classList.toggle('on', !!on);
+    }
+
+    function updateLayerRowMeta(id, text) {
+      const row = document.querySelector(`.row[data-layer="${id}"] .rowSub`);
+      if (row && text) row.textContent = text;
+    }
+
+    function clearLayer(layer) {
+      if (layer.group && map.hasLayer(layer.group)) map.removeLayer(layer.group);
+      if (layer.group && layer.group.clearLayers) layer.group.clearLayers();
+      (layer.destroyers || []).forEach((fn) => { try { fn(); } catch (_) {} });
+      layer.destroyers = [];
+      layer.group = null;
+      layer.loaded = false;
+      layer.visible = false;
+      layer.count = 0;
+      layer.stats = {};
+      setToggleUi(layer.id, false);
+      updateSidebarMetrics();
+    }
+
+    async function fetchJson(url, init) {
+      const res = await fetch(url, init);
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      return await res.json();
+    }
+
+    async function fetchText(url, init) {
+      const res = await fetch(url, init);
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+      return await res.text();
+    }
+
+    function featureSearchMatch(feature) {
+      const q = app.searchText.trim().toLowerCase();
+      if (!q) return true;
+      const p = feature.properties || {};
+      const hay = [
+        pick(p, ['plant_name', 'plantname', 'Plant___Project_name', 'name', 'station_name']),
+        pick(p, ['entity_name', 'owner', 'company', 'operator']),
+        pick(p, ['technology', 'fuel_type', 'Fuel'])
+      ].filter(Boolean).join(' | ').toLowerCase();
+      return hay.includes(q);
+    }
+
+    function plantStatusMatch(feature) {
+      if (app.plantStatus === 'all') return true;
+      const p = feature.properties || {};
+      const status = parsePlantStatus(pick(p, ['status', 'Status', 'status_label']));
+      return status === app.plantStatus;
+    }
+
+    function featureToPointMarker(feature, opts = {}) {
+      const p = feature.properties || {};
+      const mw = Number(pick(p, ['nameplate_mw', 'mw', 'capacity_mw', 'Capacity_MW', 'capacity'])) || 0;
+      const tech = pick(p, ['technology', 'fuel_type', 'Fuel']) || 'Other';
+      const color = opts.colorFn ? opts.colorFn(feature) : technologyColor(tech);
+      const radius = opts.radiusFn ? opts.radiusFn(feature) : radiusFromCapacity(mw);
+      return L.circleMarker([feature.geometry.coordinates[1], feature.geometry.coordinates[0]], {
+        radius,
+        color: 'rgba(255,255,255,0.45)',
+        weight: 1,
+        fillColor: color,
+        fillOpacity: opts.fillOpacity ?? 0.84
+      });
+    }
+
+    function createPointLayerFromGeoJson(geojson, opts = {}) {
+      const cluster = !!opts.cluster;
+      const group = cluster
+        ? L.markerClusterGroup({ disableClusteringAtZoom: opts.disableClusteringAtZoom || 7, showCoverageOnHover: false, spiderfyOnMaxZoom: true })
+        : L.layerGroup();
+
+      const validFeatures = (geojson.features || []).filter((f) => {
+        const g = f && f.geometry;
+        return g && g.type === 'Point' && Array.isArray(g.coordinates) && Number.isFinite(g.coordinates[0]) && Number.isFinite(g.coordinates[1]);
+      });
+
+      for (const feature of validFeatures) {
+        if (opts.filter && !opts.filter(feature)) continue;
+        const marker = featureToPointMarker(feature, opts);
+        marker.bindPopup(ensurePopup(feature, opts.extraRows ? opts.extraRows(feature) : []), { maxWidth: 360 });
+        group.addLayer(marker);
+      }
+      return { group, count: group.getLayers ? group.getLayers().length : validFeatures.length };
+    }
+
+    function createLineOrPolygonLayer(geojson, opts = {}) {
+      const group = L.geoJSON(geojson, {
+        style: (feature) => typeof opts.style === 'function' ? opts.style(feature) : (opts.style || {}),
+        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 4, color: '#fff', weight: 1, fillColor: '#fff', fillOpacity: 0.8 }),
+        filter: opts.filter,
+        onEachFeature: (feature, layer) => {
+          if (feature.geometry && feature.geometry.type !== 'Point') {
+            layer.bindPopup(ensurePopup(feature, opts.extraRows ? opts.extraRows(feature) : []), { maxWidth: 360 });
+          }
+        }
+      });
+      return { group, count: group.getLayers().length };
+    }
+
+    async function buildGeoJsonFromRemote(config) {
+      if (config.format === 'csv') {
+        const text = await fetchText(config.url);
+        const parsed = Papa.parse(text, { header: true, dynamicTyping: false, skipEmptyLines: true });
+        return tabularRowsToGeoJson(parsed.data, config.kindHint);
+      }
+      if (config.format === 'xlsx') {
+        const res = await fetch(config.url);
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const arr = await res.arrayBuffer();
+        return workbookToGeoJson(arr, config.kindHint);
+      }
+      return await fetchJson(config.url);
+    }
+
+    async function loadGeoJsonLayer(layer, config) {
+      if (layer.loading) return;
+      layer.loading = true;
+      try {
+        const geojson = await buildGeoJsonFromRemote(config);
+        layer.data = geojson;
+        const builder = config.builder || ((gj) => createLineOrPolygonLayer(gj, config));
+        const built = builder(geojson);
+        layer.group = built.group;
+        layer.count = built.count || 0;
+        layer.loaded = true;
+        layer.visible = true;
+        if (config.fitOnce) map.fitBounds(layer.group.getBounds(), { padding: [20, 20] });
+        map.addLayer(layer.group);
+        updateSidebarMetrics();
+      } finally {
+        layer.loading = false;
+      }
+    }
+
+    function getArcgisQueryUrl(baseUrl, params) {
+      return `${baseUrl}/query?${new URLSearchParams(params).toString()}`;
+    }
+
+    function createArcgisViewportLayer(layer, config) {
+      const holder = config.cluster
+        ? L.markerClusterGroup({ disableClusteringAtZoom: config.disableClusteringAtZoom || 7, showCoverageOnHover: false })
+        : L.geoJSON(null, {
+            style: (feature) => typeof config.style === 'function' ? config.style(feature) : config.style,
+            pointToLayer: (feature, latlng) => {
+              if (config.pointToLayer) return config.pointToLayer(feature, latlng);
+              return L.circleMarker(latlng, { radius: 4, color: '#fff', weight: 1, fillColor: '#fff', fillOpacity: 0.8 });
+            },
+            onEachFeature: (feature, l) => {
+              l.bindPopup(ensurePopup(feature, config.extraRows ? config.extraRows(feature) : []), { maxWidth: 360 });
+            }
+          });
+
+      let features = [];
+      let requestToken = 0;
+      const refresh = debounce(async () => {
+        if (!layer.visible) return;
+        if (config.minZoom && map.getZoom() < config.minZoom) {
+          holder.clearLayers();
+          layer.count = 0;
+          layer.stats = { hiddenForZoom: true };
+          updateLayerRowMeta(layer.id, `Zoom to ${config.minZoom}+ for detail`);
+          updateSidebarMetrics();
+          return;
+        }
+
+        const token = ++requestToken;
+        const b = map.getBounds();
+        const envelope = JSON.stringify({
+          xmin: b.getWest(),
+          ymin: b.getSouth(),
+          xmax: b.getEast(),
+          ymax: b.getNorth(),
+          spatialReference: { wkid: 4326 }
+        });
+        const params = {
+          f: 'geojson',
+          where: config.where || '1=1',
+          outFields: config.outFields || '*',
+          returnGeometry: 'true',
+          geometry: envelope,
+          geometryType: 'esriGeometryEnvelope',
+          inSR: '4326',
+          spatialRel: 'esriSpatialRelIntersects',
+          outSR: '4326',
+          resultType: 'tile',
+          returnExceededLimitFeatures: 'true'
+        };
+        if (config.maxAllowableOffset) params.maxAllowableOffset = String(config.maxAllowableOffset(map.getZoom()));
+        if (config.geometryPrecision) params.geometryPrecision = String(config.geometryPrecision);
+
+        try {
+          const geojson = await fetchJson(getArcgisQueryUrl(config.url, params));
+          if (token !== requestToken) return;
+          features = Array.isArray(geojson.features) ? geojson.features : [];
+          layer.data = geojson;
+          holder.clearLayers();
+          if (config.cluster) {
+            const built = createPointLayerFromGeoJson(geojson, {
+              cluster: true,
+              colorFn: config.colorFn,
+              radiusFn: config.radiusFn,
+              fillOpacity: config.fillOpacity,
+              disableClusteringAtZoom: config.disableClusteringAtZoom,
+              filter: (feature) => (!config.filter || config.filter(feature)) && featureSearchMatch(feature) && plantStatusMatch(feature),
+              extraRows: config.extraRows
+            });
+            built.group.eachLayer((m) => holder.addLayer(m));
+            layer.count = built.count;
+          } else {
+            L.geoJSON(geojson, {
+              style: (feature) => typeof config.style === 'function' ? config.style(feature) : config.style,
+              filter: (feature) => (!config.filter || config.filter(feature)) && featureSearchMatch(feature) && plantStatusMatch(feature),
+              pointToLayer: (feature, latlng) => config.pointToLayer ? config.pointToLayer(feature, latlng) : L.circleMarker(latlng, { radius: 4, color: '#fff', weight: 1, fillColor: '#fff', fillOpacity: 0.8 }),
+              onEachFeature: (feature, l) => {
+                l.bindPopup(ensurePopup(feature, config.extraRows ? config.extraRows(feature) : []), { maxWidth: 360 });
+                holder.addLayer(l);
+              }
+            });
+            layer.count = holder.getLayers().length;
+          }
+          layer.stats = config.stats ? config.stats(features) : {};
+          updateLayerRowMeta(layer.id, config.metaText ? config.metaText(features) : `${fmtInt(layer.count)} features in view`);
+          updateSidebarMetrics();
+        } catch (err) {
+          console.error(err);
+          updateLayerRowMeta(layer.id, 'Could not refresh service');
+        }
+      }, config.debounce || 240);
+
+      const onMove = () => refresh();
+      map.on('moveend zoomend', onMove);
+      const removeMoveListener = () => map.off('moveend zoomend', onMove);
+      const refreshHandle = () => {};
+      refreshHandle._refresh = () => refresh();
+      layer.destroyers.push(removeMoveListener, refreshHandle);
+      layer.group = holder;
+      layer.loaded = true;
+      layer.visible = true;
+      map.addLayer(holder);
+      refresh();
+    }
+
+    function createOsmPowerLayer(layer) {
+      const holder = L.geoJSON(null, {
+        style: (feature) => {
+          const power = pick(feature.properties || {}, ['power']) || '';
+          if (String(power).toLowerCase().includes('station')) {
+            return { color: '#d9c8ff', weight: 1.2, fillColor: '#d9c8ff', fillOpacity: 0.12, className: 'osm-power-glow' };
+          }
+          return { color: '#a88bff', weight: map.getZoom() > 8 ? 1.6 : 1.1, opacity: 0.9, className: 'osm-power-glow' };
+        },
+        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 3.2, color: '#efe8ff', weight: 1, fillColor: '#b493ff', fillOpacity: 0.85 }),
+        onEachFeature: (feature, l) => l.bindPopup(ensurePopup(feature), { maxWidth: 360 })
+      });
+
+      const refresh = debounce(async () => {
+        if (!layer.visible) return;
+        if (map.getZoom() < 6) {
+          holder.clearLayers();
+          layer.count = 0;
+          updateLayerRowMeta(layer.id, 'Zoom to 6+ for OSM power');
+          updateSidebarMetrics();
+          return;
+        }
+        const b = map.getBounds();
+        const query = `
+[out:json][timeout:60];
+(
+  way["power"~"line|minor_line|cable|station|substation|generator"](${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()});
+  relation["power"~"line|minor_line|cable|station|substation|generator"](${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()});
+  node["power"~"substation|station|plant|generator"](${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()});
+);
+out geom;`;
+        try {
+          const res = await fetch('https://overpass-api.de/api/interpreter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+            body: query
+          });
+          if (!res.ok) throw new Error(`Overpass ${res.status}`);
+          const data = await res.json();
+          const geojson = overpassToGeoJson(data);
+          holder.clearLayers();
+          holder.addData(geojson);
+          layer.data = geojson;
+          layer.count = holder.getLayers().length;
+          updateLayerRowMeta(layer.id, `${fmtInt(layer.count)} OSM power features in view`);
+          updateSidebarMetrics();
+        } catch (err) {
+          console.error(err);
+          updateLayerRowMeta(layer.id, 'OSM power query failed');
+          showToast('OSM power query failed for this view.');
+        }
+      }, 500);
+
+      const onMove = () => refresh();
+      map.on('moveend zoomend', onMove);
+      const removeMoveListener = () => map.off('moveend zoomend', onMove);
+      const refreshHandle = () => {};
+      refreshHandle._refresh = () => refresh();
+      layer.destroyers.push(removeMoveListener, refreshHandle);
+      layer.group = holder;
+      layer.loaded = true;
+      layer.visible = true;
+      map.addLayer(holder);
+      refresh();
+    }
+
+    function overpassToGeoJson(data) {
+      const nodeMap = new Map();
+      for (const el of data.elements || []) {
+        if (el.type === 'node') nodeMap.set(el.id, [el.lon, el.lat]);
+      }
+      const features = [];
+      for (const el of data.elements || []) {
+        if (el.type === 'node' && el.lon != null && el.lat != null) {
+          features.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [el.lon, el.lat] },
+            properties: { ...(el.tags || {}), osm_id: el.id, geometry_type: 'node' }
+          });
+        }
+        if (el.type === 'way') {
+          const coords = Array.isArray(el.geometry)
+            ? el.geometry.map((g) => [g.lon, g.lat])
+            : (el.nodes || []).map((id) => nodeMap.get(id)).filter(Boolean);
+          if (coords.length >= 2) {
+            features.push({
+              type: 'Feature',
+              geometry: { type: 'LineString', coordinates: coords },
+              properties: { ...(el.tags || {}), osm_id: el.id, geometry_type: 'way' }
+            });
+          }
+        }
+      }
+      return { type: 'FeatureCollection', features };
+    }
+
+    async function toggleLayer(id, force) {
+      const layer = app.layers.get(id);
+      if (!layer) return;
+      const next = typeof force === 'boolean' ? force : !layer.visible;
+
+      if (!next) {
+        if (layer.group && map.hasLayer(layer.group)) map.removeLayer(layer.group);
+        layer.visible = false;
+        setToggleUi(id, false);
+        updateSidebarMetrics();
+        return;
+      }
+
+      if (layer.group && !map.hasLayer(layer.group)) {
+        map.addLayer(layer.group);
+        layer.visible = true;
+        setToggleUi(id, true);
+        if (layer.type === 'arcgis' && layer.loaded) {
+          const fn = layer.destroyers.find((d) => d._refresh);
+          if (fn && fn._refresh) fn._refresh();
+        }
+        updateSidebarMetrics();
+        return;
+      }
+
+      try {
+        if (layer.type === 'geojson-remote') {
+          await loadGeoJsonLayer(layer, layer.source);
+        } else if (layer.type === 'arcgis') {
+          createArcgisViewportLayer(layer, layer.source);
+        } else if (layer.type === 'osm-overpass') {
+          createOsmPowerLayer(layer);
+        } else if (layer.type === 'custom' && layer.group) {
+          map.addLayer(layer.group);
+          layer.visible = true;
+        } else if (layer.type === 'custom') {
+          openLoader(layer.loaderTarget || 'custom');
+          return;
+        }
+        layer.visible = true;
+        setToggleUi(id, true);
+        updateSidebarMetrics();
+      } catch (err) {
+        console.error(err);
+        showToast(`Could not load ${layer.label}.`);
+        updateLayerRowMeta(layer.id, 'Load failed');
+      }
+    }
+
+    function applyPlantLayerFilters() {
+      const ids = ['gem-power', 'eia-custom'];
+      for (const id of ids) {
+        const layer = app.layers.get(id);
+        if (!layer || !layer.group || !layer.visible) continue;
+        if (layer.type === 'custom') {
+          renderCustomPointLayer(layer);
+        } else if (layer.type === 'arcgis') {
+          const listeners = layer.destroyers || [];
+          for (const d of listeners) {
+            if (d && d._refresh) d._refresh();
+          }
+        }
+      }
+    }
+
+    function renderCustomPointLayer(layer) {
+      const geojson = layer.data;
+      if (!geojson) return;
+      if (layer.group && map.hasLayer(layer.group)) map.removeLayer(layer.group);
+      const built = createPointLayerFromGeoJson(geojson, {
+        cluster: false,
+        colorFn: (feature) => technologyColor(pick(feature.properties || {}, ['technology', 'fuel_type', 'Fuel'])),
+        radiusFn: (feature) => radiusFromCapacity(Number(pick(feature.properties || {}, ['nameplate_mw', 'mw', 'capacity_mw', 'Capacity_MW', 'capacity']))),
+        filter: (feature) => featureSearchMatch(feature) && plantStatusMatch(feature),
+        extraRows: (feature) => [['Source', layer.label]]
+      });
+      layer.group = built.group;
+      layer.count = built.count;
+      layer.loaded = true;
+      if (layer.visible) map.addLayer(layer.group);
+      updateLayerRowMeta(layer.id, `${fmtInt(layer.count)} features loaded`);
+      updateSidebarMetrics();
+    }
+
+    async function readFileAsArrayBuffer(file) {
+      return await file.arrayBuffer();
+    }
+
+    async function loadFileOrUrl(target, mode, file, url, useDefault = false) {
+      const targetLayer = target === 'eia' ? 'eia-custom' : target === 'ourgridfuture' ? 'ourgridfuture' : target === 'tele' ? 'tele-custom' : 'custom-generic';
+      let layer = app.layers.get(targetLayer);
+      if (!layer && target === 'custom') {
+        layer = registerLayer({ id: 'custom-generic', label: 'Custom layer', type: 'custom', visible: false, loaded: false, count: 0 });
+      }
+
+      try {
+        let geojson = null;
+        const defaultUrls = {
+          ourgridfuture: { url: 'https://www.ourgridfuture.org/download/OurGridFuture_PlannedTransmissionProjects_Mar2026.xlsx', kindHint: 'line' },
+          tele: null,
+          custom: null,
+          eia: null
+        };
+
+        setProgress(10, 'Reading source…');
+
+        if (useDefault) {
+          if (!defaultUrls[target] || !defaultUrls[target].url) throw new Error('No default URL is configured for this source.');
+          geojson = await buildGeoJsonFromRemote({ ...defaultUrls[target], format: defaultUrls[target].url.endsWith('.xlsx') ? 'xlsx' : 'geojson' });
+        } else if (mode === 'url') {
+          const sourceUrl = String(url || '').trim();
+          if (!sourceUrl) throw new Error('Enter a URL first.');
+          geojson = await geojsonFromRemoteUrl(sourceUrl, target);
+        } else {
+          if (!file) throw new Error('Choose a file first.');
+          geojson = await geojsonFromLocalFile(file, target);
+        }
+
+        setProgress(72, 'Building map layer…');
+
+        if (!geojson || !Array.isArray(geojson.features) || !geojson.features.length) {
+          throw new Error('No mappable features were found.');
+        }
+
+        if (!layer) {
+          layer = registerLayer({ id: targetLayer, label: target === 'custom' ? 'Custom layer' : targetLayer, type: 'custom' });
+        }
+
+        layer.data = geojson;
+        layer.visible = true;
+        layer.loaded = true;
+        layer.type = 'custom';
+        layer.label = target === 'eia' ? 'EIA plants' : target === 'ourgridfuture' ? 'Our Grid Future planned' : target === 'tele' ? 'TeleGeography / cables' : 'Custom layer';
+
+        if (target === 'eia') {
+          renderCustomPointLayer(layer);
+        } else {
+          const style = target === 'ourgridfuture'
+            ? { color: '#ff62b0', weight: 2.2, opacity: 0.95, className: 'transmission-glow' }
+            : target === 'tele'
+            ? { color: '#80f2ff', weight: 2.0, opacity: 0.9, className: 'cable-glow' }
+            : { color: '#ffffff', weight: 2, opacity: 0.9 };
+          const built = createLineOrPolygonLayer(geojson, { style });
+          layer.group = built.group;
+          layer.count = built.count;
+          map.addLayer(layer.group);
+        }
+
+        setToggleUi(layer.id, true);
+        updateLayerRowMeta(layer.id, `${fmtInt(layer.count)} features loaded`);
+        setProgress(100, 'Done.');
+        updateSidebarMetrics();
+        closeLoader();
+        showToast(`${layer.label} loaded.`);
+      } catch (err) {
+        console.error(err);
+        setProgress(0, err.message || 'Load failed.');
+        showToast(err.message || 'Load failed.');
+      }
+    }
+
+    async function geojsonFromRemoteUrl(url, target) {
+      const clean = String(url).trim();
+      if (clean.endsWith('.csv')) {
+        const text = await fetchText(clean);
+        const parsed = Papa.parse(text, { header: true, dynamicTyping: false, skipEmptyLines: true });
+        return tabularRowsToGeoJson(parsed.data, target === 'ourgridfuture' ? 'line' : 'point');
+      }
+      if (clean.endsWith('.xlsx') || clean.endsWith('.xls')) {
+        const res = await fetch(clean);
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const buffer = await res.arrayBuffer();
+        return workbookToGeoJson(buffer, target === 'ourgridfuture' ? 'line' : 'point');
+      }
+      if (clean.endsWith('.zip')) {
+        const res = await fetch(clean);
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        const buffer = await res.arrayBuffer();
+        return await zipToGeoJson(buffer);
+      }
+      return await fetchJson(clean);
+    }
+
+    async function geojsonFromLocalFile(file, target) {
+      const name = String(file.name || '').toLowerCase();
+      if (name.endsWith('.csv')) {
+        const text = await file.text();
+        const parsed = Papa.parse(text, { header: true, dynamicTyping: false, skipEmptyLines: true });
+        return tabularRowsToGeoJson(parsed.data, target === 'ourgridfuture' ? 'line' : 'point');
+      }
+      if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+        const buffer = await readFileAsArrayBuffer(file);
+        return workbookToGeoJson(buffer, target === 'ourgridfuture' ? 'line' : 'point');
+      }
+      if (name.endsWith('.json') || name.endsWith('.geojson')) {
+        return JSON.parse(await file.text());
+      }
+      if (name.endsWith('.zip')) {
+        const buffer = await readFileAsArrayBuffer(file);
+        return await zipToGeoJson(buffer);
+      }
+      if (name.endsWith('.kml')) {
+        const text = await file.text();
+        const xml = new DOMParser().parseFromString(text, 'text/xml');
+        return toGeoJSON.kml(xml);
+      }
+      throw new Error('Unsupported file type. Use CSV, XLSX, GeoJSON, KML, or zipped shapefile.');
+    }
+
+    async function zipToGeoJson(arrayBuffer) {
+      const parsed = await shp(arrayBuffer);
+      if (parsed.type === 'FeatureCollection') return parsed;
+      if (Array.isArray(parsed)) {
+        const features = parsed.flatMap((fc) => fc.features || []);
+        return { type: 'FeatureCollection', features };
+      }
+      throw new Error('Could not read zipped shapefile.');
+    }
+
+    function workbookToGeoJson(arrayBuffer, kindHint) {
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+      return tabularRowsToGeoJson(rows, kindHint);
+    }
+
+    function detectColumn(keys, candidates) {
+      const normalized = new Map(keys.map((k) => [String(k).toLowerCase().replace(/[^a-z0-9]+/g, ''), k]));
+      for (const c of candidates) {
+        const hit = normalized.get(c.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    function num(v) {
+      if (v == null) return NaN;
+      const n = Number(String(v).replace(/,/g, '').trim());
+      return Number.isFinite(n) ? n : NaN;
+    }
+
+    function tabularRowsToGeoJson(rows, kindHint = 'point') {
+      if (!Array.isArray(rows) || !rows.length) throw new Error('No rows found.');
+      const keys = Object.keys(rows[0]);
+      const latKey = detectColumn(keys, ['latitude', 'lat', 'y']);
+      const lonKey = detectColumn(keys, ['longitude', 'lon', 'lng', 'x']);
+      const fromLatKey = detectColumn(keys, ['fromlatitude', 'startlatitude', 'originlatitude', 'latfrom', 'sourcelatitude']);
+      const fromLonKey = detectColumn(keys, ['fromlongitude', 'startlongitude', 'originlongitude', 'lonfrom', 'sourcelongitude']);
+      const toLatKey = detectColumn(keys, ['tolatitude', 'endlatitude', 'destinationlatitude', 'latto']);
+      const toLonKey = detectColumn(keys, ['tolongitude', 'endlongitude', 'destinationlongitude', 'lonto']);
+      const nameKey = detectColumn(keys, ['plantname', 'plant_name', 'name', 'projectname', 'project_name', 'stationname']);
+      const techKey = detectColumn(keys, ['technology', 'fueltype', 'fuel', 'primaryfuel']);
+      const mwKey = detectColumn(keys, ['nameplatecapacitymw', 'nameplate_mw', 'capacitymw', 'capacity_mw', 'mw', 'capacity']);
+      const ownerKey = detectColumn(keys, ['entityname', 'owner', 'company', 'operator']);
+      const statusKey = detectColumn(keys, ['status']);
+      const stateKey = detectColumn(keys, ['state', 'plantstate']);
+      const voltageKey = detectColumn(keys, ['voltage', 'kv', 'maxvoltage']);
+
+      const features = [];
+
+      if (latKey && lonKey) {
+        for (const row of rows) {
+          const lat = num(row[latKey]);
+          const lon = num(row[lonKey]);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+          features.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [lon, lat] },
+            properties: {
+              ...row,
+              plant_name: row[nameKey] ?? row[nameKey || 'name'] ?? null,
+              technology: row[techKey] ?? null,
+              nameplate_mw: row[mwKey] ?? null,
+              entity_name: row[ownerKey] ?? null,
+              status: row[statusKey] ?? null,
+              state: row[stateKey] ?? null,
+              voltage: row[voltageKey] ?? null
+            }
+          });
+        }
+      } else if (fromLatKey && fromLonKey && toLatKey && toLonKey) {
+        for (const row of rows) {
+          const aLat = num(row[fromLatKey]);
+          const aLon = num(row[fromLonKey]);
+          const bLat = num(row[toLatKey]);
+          const bLon = num(row[toLonKey]);
+          if (![aLat, aLon, bLat, bLon].every(Number.isFinite)) continue;
+          features.push({
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: [[aLon, aLat], [bLon, bLat]] },
+            properties: { ...row }
+          });
+        }
+      } else {
+        throw new Error('Could not identify coordinates. Expected lat/lon columns or start/end coordinate columns.');
+      }
+
+      return { type: 'FeatureCollection', features };
+    }
+
+    function collectVisiblePlantFeatures() {
+      const features = [];
+      for (const id of ['gem-power', 'eia-custom']) {
+        const layer = app.layers.get(id);
+        if (!layer || !layer.visible) continue;
+        if (layer.data && Array.isArray(layer.data.features)) {
+          const local = layer.data.features.filter((f) => featureSearchMatch(f) && plantStatusMatch(f));
+          features.push(...local);
+        }
+      }
+      return features;
+    }
+
+    function collectVisibleDataCenterCount() {
+      let count = 0;
+      for (const id of ['im3-existing-centroids', 'im3-projected', 'epoch-frontier']) {
+        const layer = app.layers.get(id);
+        if (layer && layer.visible) count += layer.count || 0;
+      }
+      return count;
+    }
+
+    function collectTransmissionMiles() {
+      let miles = 0;
+      for (const id of ['hifld-transmission', 'section-368', 'ourgridfuture']) {
+        const layer = app.layers.get(id);
+        if (layer && layer.visible && layer.data) miles += toMiles(layer.data);
+      }
+      return miles;
+    }
+
+    function updateTechnologyLegend(plantFeatures) {
+      const wrap = document.getElementById('technologyLegend');
+      const buckets = new Map();
+      for (const feature of plantFeatures) {
+        const p = feature.properties || {};
+        const tech = pick(p, ['technology', 'fuel_type', 'Fuel']) || 'Other';
+        const mw = Number(pick(p, ['nameplate_mw', 'mw', 'capacity_mw', 'Capacity_MW', 'capacity'])) || 0;
+        const cur = buckets.get(tech) || { count: 0, mw: 0 };
+        cur.count += 1;
+        cur.mw += mw;
+        buckets.set(tech, cur);
+      }
+      const rows = [...buckets.entries()].sort((a, b) => b[1].mw - a[1].mw).slice(0, 12);
+      wrap.innerHTML = rows.length
+        ? rows.map(([name, info]) => `
+            <div class="legendItem">
+              <div class="swatch" style="background:${technologyColor(name)}"></div>
+              <div class="name">${escapeHtml(name)}</div>
+              <div class="n">${fmtInt(info.count)}</div>
+              <div class="mw">${fmtMW(info.mw)}</div>
+            </div>
+          `).join('')
+        : `<div class="hint">No plant layer is active yet.</div>`;
+    }
+
+    function updateVoltageLegend() {
+      const wrap = document.getElementById('voltageLegend');
+      const layer = app.layers.get('hifld-transmission');
+      const features = layer && layer.data && Array.isArray(layer.data.features) ? layer.data.features : [];
+      const buckets = new Map();
+      for (const feature of features) {
+        const kv = normalizeVoltage(pick(feature.properties || {}, ['voltage', 'MAX_VOLT', 'max_voltage', 'MAXVOLT']));
+        const label = voltageBucket(kv);
+        buckets.set(label, (buckets.get(label) || 0) + 1);
+      }
+      const order = ['735kV+', '500-734kV', '345-499kV', '230-344kV', '100-229kV', '31-99kV', '<31kV', 'Unknown'];
+      wrap.innerHTML = order.filter((label) => buckets.has(label)).map((label) => `
+        <div class="legendItem">
+          <div class="swatch" style="background:${label === 'Unknown' ? '#9ea8c0' : '#59d8ff'}"></div>
+          <div class="name">${escapeHtml(label)}</div>
+          <div class="n">${fmtInt(buckets.get(label))}</div>
+          <div class="mw"></div>
+        </div>
+      `).join('') || `<div class="hint">Enable HIFLD transmission to see voltage buckets.</div>`;
+    }
+
+    function updateSidebarMetrics() {
+      let liveLayers = 0;
+      let features = 0;
+      for (const id of app.layerOrder) {
+        const layer = app.layers.get(id);
+        if (!layer || !layer.visible) continue;
+        liveLayers += 1;
+        features += layer.count || 0;
+      }
+
+      const plantFeatures = collectVisiblePlantFeatures();
+      const totalMW = plantFeatures.reduce((sum, feature) => sum + (Number(pick(feature.properties || {}, ['nameplate_mw', 'mw', 'capacity_mw', 'Capacity_MW', 'capacity'])) || 0), 0);
+      const dcCount = collectVisibleDataCenterCount();
+      const txMiles = collectTransmissionMiles();
+
+      document.getElementById('metricPlants').textContent = fmtInt(plantFeatures.length);
+      document.getElementById('metricMW').textContent = fmtMW(totalMW);
+      document.getElementById('metricDataCenters').textContent = fmtInt(dcCount);
+      document.getElementById('metricTransmission').textContent = fmtInt(txMiles);
+      document.getElementById('heroStats').textContent = `${fmtInt(liveLayers)} live layers | ${fmtInt(features)} loaded features`;
+      document.getElementById('statusText').textContent = `${fmtInt(liveLayers)} live layers | ${fmtInt(features)} loaded features`;
+      document.getElementById('plantsMeta').textContent = plantFeatures.length ? `${fmtInt(plantFeatures.length)} visible` : 'EIA / GEM';
+      updateTechnologyLegend(plantFeatures);
+      updateVoltageLegend();
+    }
+
+    function setupSectionCollapsers() {
+      document.querySelectorAll('.section').forEach((section) => {
+        const header = section.querySelector('.sectionHeader');
+        header.addEventListener('click', (e) => {
+          if (e.target.closest('button, select, input, .toggle, .pill')) return;
+          section.classList.toggle('collapsed');
+        });
+      });
+    }
+
+    function setupUi() {
+      makeBasemapChips();
+      setupSectionCollapsers();
+
+      document.getElementById('fitBtn').addEventListener('click', fitHome);
+      document.getElementById('railHomeBtn').addEventListener('click', fitHome);
+      document.getElementById('refreshBtn').addEventListener('click', () => {
+        for (const id of app.layerOrder) {
+          const layer = app.layers.get(id);
+          if (!layer || !layer.visible) continue;
+          const listener = layer.destroyers.find((d) => d && d._refresh);
+          if (listener && listener._refresh) listener._refresh();
+        }
+        showToast('Live layers refreshed.');
+      });
+      document.getElementById('basemapBtn').addEventListener('click', nextBasemap);
+      document.getElementById('creditsBtn').addEventListener('click', () => toggleCredits());
+      document.getElementById('railCreditsBtn').addEventListener('click', () => toggleCredits());
+      document.getElementById('closeCreditsBtn').addEventListener('click', () => toggleCredits(false));
+      document.getElementById('railLoaderBtn').addEventListener('click', () => openLoader('custom'));
+      document.getElementById('railLayersBtn').addEventListener('click', () => {
+        const sidebar = document.getElementById('sidebar');
+        sidebar.classList.toggle('hiddenSidebar');
+      });
+
+      document.querySelectorAll('[data-open-loader]').forEach((btn) => btn.addEventListener('click', () => openLoader(btn.dataset.openLoader)));
+      document.querySelectorAll('[data-scroll-target]').forEach((card) => {
+        card.addEventListener('click', () => {
+          const target = document.getElementById(card.dataset.scrollTarget);
+          if (target) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        });
+      });
+
+      document.querySelectorAll('[data-toggle-layer]').forEach((el) => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleLayer(el.dataset.toggleLayer);
+        });
+      });
+
+      document.getElementById('loaderCancelBtn').addEventListener('click', closeLoader);
+      document.getElementById('loaderMode').addEventListener('change', (e) => {
+        const isFile = e.target.value === 'file';
+        document.getElementById('loaderFile').style.display = isFile ? '' : 'none';
+        document.getElementById('loaderUrl').style.display = isFile ? 'none' : '';
+      });
+      document.getElementById('loaderSubmitBtn').addEventListener('click', () => {
+        loadFileOrUrl(
+          document.getElementById('loaderTarget').value,
+          document.getElementById('loaderMode').value,
+          document.getElementById('loaderFile').files[0],
+          document.getElementById('loaderUrl').value,
+          false
+        );
+      });
+      document.getElementById('loaderDemoBtn').addEventListener('click', () => {
+        loadFileOrUrl(document.getElementById('loaderTarget').value, 'url', null, '', true);
+      });
+
+      document.getElementById('plantSearch').addEventListener('input', debounce((e) => {
+        app.searchText = e.target.value || '';
+        applyPlantLayerFilters();
+        updateSidebarMetrics();
+      }, 160));
+
+      document.getElementById('plantStatusBar').addEventListener('click', (e) => {
+        const pill = e.target.closest('[data-plant-status]');
+        if (!pill) return;
+        app.plantStatus = pill.dataset.plantStatus;
+        document.querySelectorAll('[data-plant-status]').forEach((el) => el.classList.toggle('active', el === pill));
+        applyPlantLayerFilters();
+        updateSidebarMetrics();
+      });
+
+      document.getElementById('im3GrowthSelect').addEventListener('change', () => {
+        const layer = app.layers.get('im3-projected');
+        if (layer && layer.visible) {
+          clearLayer(layer);
+          toggleLayer('im3-projected', true);
+        }
+      });
+      document.getElementById('im3MarketGravitySelect').addEventListener('change', () => {
+        const layer = app.layers.get('im3-projected');
+        if (layer && layer.visible) {
+          clearLayer(layer);
+          toggleLayer('im3-projected', true);
+        }
+      });
+    }
+
+    function registerAllLayers() {
+      registerLayer({
+        id: 'gem-power',
+        label: 'Global Energy Monitor',
+        type: 'arcgis',
+        source: {
+          url: 'https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/Global_Integrated_Power_v1/FeatureServer/0',
+          minZoom: 3,
+          cluster: false,
+          maxAllowableOffset: (z) => Math.max(0, 20000 / Math.max(z, 1)),
+          pointToLayer: (feature, latlng) => {
+            const mw = Number(pick(feature.properties || {}, ['Capacity_MW', 'capacity_mw', 'mw'])) || 0;
+            const tech = pick(feature.properties || {}, ['Fuel', 'fuel_type', 'technology']) || 'Other';
+            return L.circleMarker(latlng, {
+              radius: radiusFromCapacity(mw),
+              color: 'rgba(255,255,255,0.38)',
+              weight: 0.9,
+              fillColor: technologyColor(tech),
+              fillOpacity: 0.83
+            });
+          },
+          filter: (feature) => {
+            const p = feature.properties || {};
+            const g = feature.geometry;
+            return g && g.type === 'Point' && pick(p, ['Fuel', 'fuel_type', 'technology']) !== null;
+          },
+          metaText: (features) => `${fmtInt(features.length)} GEM plants in view`
+        },
+        credit: {
+          title: 'Global Energy Monitor',
+          text: 'Global Integrated Power Tracker, March 2026 release, loaded from the public ArcGIS feature service.'
+        }
+      });
+
+      registerLayer({
+        id: 'eia-custom',
+        label: 'EIA plants',
+        type: 'custom',
+        loaderTarget: 'eia',
+        credit: {
+          title: 'EIA 860M',
+          text: 'The EIA monthly generator inventory is wired as a file-first source so you can load the exact EIA workbook or CSV you want to use.'
+        }
+      });
+
+      registerLayer({
+        id: 'im3-existing-centroids',
+        label: 'IM3 existing centers',
+        type: 'geojson-remote',
+        source: {
+          url: 'https://raw.githubusercontent.com/IMMM-SFA/datacenter-atlas/main/static/im3_datacenter_centroids.geojson',
+          format: 'geojson',
+          builder: (geojson) => createPointLayerFromGeoJson(geojson, {
+            cluster: true,
+            disableClusteringAtZoom: 7,
+            colorFn: () => '#ffffff',
+            radiusFn: () => 4.8,
+            fillOpacity: 0.95,
+            extraRows: () => [['Source', 'IM3 atlas']]
+          })
+        },
+        credit: {
+          title: 'IM3 Open Source Data Center Atlas',
+          text: 'Existing data center centroids are pulled from the public IMMM-SFA atlas repository.'
+        }
+      });
+
+      registerLayer({
+        id: 'im3-footprints',
+        label: 'IM3 footprints',
+        type: 'geojson-remote',
+        source: {
+          url: 'https://raw.githubusercontent.com/IMMM-SFA/datacenter-atlas/main/static/im3_datacenter_footprints.geojson',
+          format: 'geojson',
+          builder: (geojson) => createLineOrPolygonLayer(geojson, {
+            style: { color: '#aefded', weight: 1.2, fillColor: '#7ceadb', fillOpacity: 0.12 }
+          })
+        },
+        credit: {
+          title: 'IM3 footprint layer',
+          text: 'Facility footprints come from the same public IM3 atlas repository when available.'
+        }
+      });
+
+      registerLayer({
+        id: 'im3-projected',
+        label: 'IM3 projected centers',
+        type: 'geojson-remote',
+        source: {
+          get url() {
+            const growth = document.getElementById('im3GrowthSelect').value;
+            const gravity = document.getElementById('im3MarketGravitySelect').value;
+            return `https://raw.githubusercontent.com/IMMM-SFA/datacenter-atlas/main/static/projected/${growth}_${gravity}_market_gravity_epsg4326_centroids.geojson`;
+          },
+          format: 'geojson',
+          builder: (geojson) => createPointLayerFromGeoJson(geojson, {
+            cluster: true,
+            disableClusteringAtZoom: 7,
+            colorFn: () => '#98a9ff',
+            radiusFn: () => 4.2,
+            fillOpacity: 0.88,
+            extraRows: () => [['Source', 'IM3 projected scenario']]
+          })
+        },
+        credit: {
+          title: 'IM3 projected data centers',
+          text: 'Scenario layers are loaded from the public projected GeoJSON files in the IM3 atlas repository.'
+        }
+      });
+
+      registerLayer({
+        id: 'epoch-frontier',
+        label: 'Epoch frontier centers',
+        type: 'geojson-remote',
+        source: {
+          url: 'https://epoch.ai/data/data_centers/data_centers.csv',
+          format: 'csv',
+          kindHint: 'point',
+          builder: (geojson) => createPointLayerFromGeoJson(geojson, {
+            cluster: true,
+            disableClusteringAtZoom: 7,
+            colorFn: () => '#ff82cb',
+            radiusFn: () => 4.6,
+            fillOpacity: 0.9,
+            extraRows: (feature) => [['Source', 'Epoch frontier data centers']]
+          })
+        },
+        credit: {
+          title: 'Epoch frontier data centers',
+          text: 'Loaded from Epoch AI’s public frontier data center CSV.'
+        }
+      });
+
+      registerLayer({
+        id: 'hifld-transmission',
+        label: 'HIFLD transmission',
+        type: 'arcgis',
+        source: {
+          url: 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0',
+          minZoom: 3,
+          maxAllowableOffset: (z) => Math.max(0, 25000 / Math.max(z, 1)),
+          style: (feature) => {
+            const kv = normalizeVoltage(pick(feature.properties || {}, ['VOLTAGE', 'MAX_VOLT', 'max_voltage', 'MAXVOLT']));
+            const bucket = voltageBucket(kv);
+            const palette = {
+              '735kV+': '#71f1ff',
+              '500-734kV': '#56d9ff',
+              '345-499kV': '#4bb7ff',
+              '230-344kV': '#4f89ff',
+              '100-229kV': '#7b6eff',
+              '31-99kV': '#a66fff',
+              '<31kV': '#d06dff',
+              'Unknown': '#8fa2c4'
+            };
+            return {
+              color: palette[bucket] || palette.Unknown,
+              weight: kv >= 500 ? 2.1 : kv >= 230 ? 1.7 : 1.2,
+              opacity: 0.88,
+              className: 'transmission-glow'
+            };
+          },
+          filter: (feature) => feature.geometry && feature.geometry.type !== 'Point',
+          metaText: (features) => `${fmtInt(features.length)} transmission segments in view`
+        },
+        credit: {
+          title: 'HIFLD electric power transmission lines',
+          text: 'Transmission lines are loaded from the public ArcGIS feature service exposed for the HIFLD dataset.'
+        }
+      });
+
+      registerLayer({
+        id: 'hifld-substations',
+        label: 'HIFLD substations',
+        type: 'arcgis',
+        source: {
+          url: 'https://services.arcgis.com/G4S1dGvn7PIgYd6Y/ArcGIS/rest/services/HIFLD_electric_power_substations/FeatureServer/0',
+          minZoom: 4,
+          cluster: true,
+          disableClusteringAtZoom: 8,
+          colorFn: () => '#f7f8ff',
+          radiusFn: () => 4.4,
+          fillOpacity: 0.94,
+          filter: (feature) => feature.geometry && feature.geometry.type === 'Point',
+          metaText: (features) => `${fmtInt(features.length)} substations in view`
+        },
+        credit: {
+          title: 'HIFLD electric substations',
+          text: 'Substations are loaded from the public ArcGIS feature service for the HIFLD substation layer.'
+        }
+      });
+
+      registerLayer({
+        id: 'ourgridfuture',
+        label: 'Our Grid Future planned transmission',
+        type: 'custom',
+        loaderTarget: 'ourgridfuture',
+        credit: {
+          title: 'Our Grid Future planned transmission projects',
+          text: 'The loader accepts the March 2026 workbook or your own GIS export for planned transmission projects.'
+        }
+      });
+
+      registerLayer({
+        id: 'section-368',
+        label: 'Section 368 energy corridors',
+        type: 'arcgis',
+        source: {
+          url: 'https://services6.arcgis.com/u2Q4oAfciDZpDAD8/ArcGIS/rest/services/Sec368_Energy_Corridor/FeatureServer/0',
+          minZoom: 4,
+          style: {
+            color: '#ffcf52',
+            weight: 1.4,
+            opacity: 0.95,
+            fillColor: '#ffcf52',
+            fillOpacity: 0.14,
+            className: 'corridor-glow'
+          },
+          metaText: (features) => `${fmtInt(features.length)} corridor polygons in view`
+        },
+        credit: {
+          title: 'Section 368 energy corridors',
+          text: 'Loaded from the public ArcGIS feature service for the Sec368 Energy Corridor layer.'
+        }
+      });
+
+      registerLayer({
+        id: 'narn-rail',
+        label: 'NARN rail',
+        type: 'arcgis',
+        source: {
+          url: 'https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NTAD_North_American_Rail_Network_Lines/FeatureServer/0',
+          minZoom: 3,
+          maxAllowableOffset: (z) => Math.max(0, 22000 / Math.max(z, 1)),
+          style: { color: '#66c3ff', weight: 1.1, opacity: 0.52, className: 'rail-glow' },
+          metaText: (features) => `${fmtInt(features.length)} rail segments in view`
+        },
+        credit: {
+          title: 'FRA / BTS NARN rail network',
+          text: 'Loaded from the public ArcGIS feature service for NTAD North American Rail Network lines.'
+        }
+      });
+
+      registerLayer({
+        id: 'nhs-highways',
+        label: 'National Highway System',
+        type: 'arcgis',
+        source: {
+          url: 'https://services.arcgis.com/xOi1kZaI0eWDREZv/ArcGIS/rest/services/NTAD_National_Highway_System/FeatureServer/0',
+          minZoom: 3,
+          maxAllowableOffset: (z) => Math.max(0, 22000 / Math.max(z, 1)),
+          style: { color: '#ffb668', weight: 1.15, opacity: 0.46, className: 'highway-glow' },
+          metaText: (features) => `${fmtInt(features.length)} NHS segments in view`
+        },
+        credit: {
+          title: 'FHWA / BTS National Highway System',
+          text: 'Loaded from the public ArcGIS feature service for the NTAD National Highway System layer.'
+        }
+      });
+
+      registerLayer({
+        id: 'nwn-waterways',
+        label: 'National Waterway Network',
+        type: 'arcgis',
+        source: {
+          url: 'https://services7.arcgis.com/n1YM8pTrFmm7L4hs/ArcGIS/rest/services/Waterway_Networks/FeatureServer/1',
+          minZoom: 3,
+          maxAllowableOffset: (z) => Math.max(0, 25000 / Math.max(z, 1)),
+          style: { color: '#35e1c3', weight: 1.4, opacity: 0.62, className: 'waterway-glow' },
+          metaText: (features) => `${fmtInt(features.length)} waterway segments in view`
+        },
+        credit: {
+          title: 'USACE National Waterway Network',
+          text: 'Loaded from the public ArcGIS feature service listed for the NWN lines dataset.'
+        }
+      });
+
+      registerLayer({
+        id: 'tele-custom',
+        label: 'TeleGeography cables',
+        type: 'custom',
+        loaderTarget: 'tele',
+        credit: {
+          title: 'TeleGeography submarine cables',
+          text: 'The custom loader is ready for GeoJSON, KML, or zipped GIS exports of submarine cable routes or landing points.'
+        }
+      });
+
+      registerLayer({
+        id: 'aqueduct-risk',
+        label: 'Aqueduct 4.0 water risk',
+        type: 'arcgis',
+        source: {
+          url: 'https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/aqueduct_water_risk/FeatureServer/1',
+          minZoom: 4,
+          style: (feature) => {
+            const value = Number(pick(feature.properties || {}, ['overallrisk', 'overall_risk', 'bws_cat', 'bws_score', 'owr_score']));
+            const fill = Number.isFinite(value)
+              ? value >= 4 ? '#ff5f5f'
+              : value >= 3 ? '#ff8f52'
+              : value >= 2 ? '#ffb44d'
+              : value >= 1 ? '#ffd452'
+              : '#77f0b4'
+              : '#60708c';
+            return { color: fill, weight: 0.4, opacity: 0.45, fillColor: fill, fillOpacity: 0.14 };
+          },
+          metaText: (features) => `${fmtInt(features.length)} watersheds in view`
+        },
+        credit: {
+          title: 'WRI Aqueduct 4.0',
+          text: 'Baseline annual water-risk polygons are loaded from the public ArcGIS feature service for Aqueduct 4.0.'
+        }
+      });
+
+      registerLayer({
+        id: 'hifld-gas',
+        label: 'Natural gas pipelines',
+        type: 'arcgis',
+        source: {
+          url: 'https://services5.arcgis.com/HDRa0B57OVrv2E1q/ArcGIS/rest/services/Natural_Gas_Pipelines/FeatureServer/0',
+          minZoom: 4,
+          maxAllowableOffset: (z) => Math.max(0, 25000 / Math.max(z, 1)),
+          style: { color: '#9c7dff', weight: 1.3, opacity: 0.62, className: 'pipeline-glow' },
+          metaText: (features) => `${fmtInt(features.length)} gas pipeline segments in view`
+        },
+        credit: {
+          title: 'HIFLD natural gas pipelines',
+          text: 'Loaded from the public ArcGIS feature service for natural gas pipelines.'
+        }
+      });
+
+      registerLayer({
+        id: 'afdc-ev',
+        label: 'AFDC EV charging',
+        type: 'geojson-remote',
+        source: {
+          url: 'https://developer.nrel.gov/api/alt-fuel-stations/v1.geojson?api_key=DEMO_KEY&fuel_type=ELEC&access=public&country=US&limit=all',
+          format: 'geojson',
+          builder: (geojson) => createPointLayerFromGeoJson(geojson, {
+            cluster: true,
+            disableClusteringAtZoom: 8,
+            colorFn: () => '#ffffff',
+            radiusFn: () => 4.1,
+            fillOpacity: 0.94,
+            extraRows: () => [['Source', 'AFDC / NREL']]
+          })
+        },
+        credit: {
+          title: 'AFDC EV charging stations',
+          text: 'Loaded from the public Alternative Fuel Stations API using the standard demo key. Swap in your own NREL key for production use.'
+        }
+      });
+
+      registerLayer({
+        id: 'osm-power',
+        label: 'OSM power layer',
+        type: 'osm-overpass',
+        source: {},
+        credit: {
+          title: 'OpenStreetMap power infrastructure',
+          text: 'Current-view OSM power features are requested from Overpass and rendered only for the active map window.'
+        }
+      });
+    }
+
+    setupUi();
+    registerAllLayers();
+    fitHome();
+    updateSidebarMetrics();
+
+    // Attach refresh handles for plant re-renders and live services.
+    for (const id of app.layerOrder) {
+      const layer = app.layers.get(id);
+      if (!layer) continue;
+      const fn = () => {};
+      fn._refresh = () => {
+        if (layer.type === 'custom' && layer.id === 'eia-custom') renderCustomPointLayer(layer);
+      };
+      layer.destroyers.push(fn);
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeLoader();
+        toggleCredits(false);
+      }
+    });
+  </script>
+</body>
+</html>
